@@ -5,7 +5,6 @@ import glob
 import re
 from pydub import AudioSegment, silence
 from tqdm import tqdm
-from modelscope import snapshot_download
 from qwen_asr import Qwen3ASRModel
 
 def resample_audio(src_path, dest_path, target_sr=24000):
@@ -89,12 +88,11 @@ def run_pipeline(input_dir, ref_audio, output_dir, model_id="Qwen/Qwen3-ASR-1.7B
     
     if progress: progress(0.1, desc=f"Loading Model: {model_id} (Downloading might take a while...)")
     print(f"Loading ASR Model: {model_id}")
-    model_dir = snapshot_download(model_id)
     kwargs = {"dtype": torch.bfloat16, "device_map": "auto"}
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-    asr_model = Qwen3ASRModel.from_pretrained(model_dir, **kwargs)
+    asr_model = Qwen3ASRModel.from_pretrained(model_id, **kwargs)
     
     wav_files = sorted(glob.glob(os.path.join(input_dir, "*.wav")))
     all_segments = []

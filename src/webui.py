@@ -11,6 +11,7 @@ import threading
 # Ensure src in path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from data_pipeline import run_pipeline
+from utils import get_model_path
 
 # ----------------- Globals & Utilities -----------------
 global_tts_model = None
@@ -67,11 +68,14 @@ def run_data_prep(input_dir, ref_audio, speaker_name, model_id, asr_source, gpu_
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
     
     try:
+        use_hf = (asr_source == "HuggingFace")
+        resolved_model_id = get_model_path(model_id, use_hf)
+        
         success, msg = run_pipeline(
             input_dir=input_dir,
             ref_audio=ref_audio,
             output_dir=output_dir,
-            model_id=model_id,
+            model_id=resolved_model_id,
             batch_size=16,
             progress=progress
         )
@@ -107,10 +111,14 @@ def start_training(speaker_name, init_model, model_source, batch_size, lr, epoch
     env["PYTHONPATH"] = "src:" + env.get("PYTHONPATH", "")
     env["PYTHONUNBUFFERED"] = "1"  # Force unbuffered Python output for real-time logs
     
+    use_hf = (model_source == "HuggingFace")
+    resolved_init_model = get_model_path(init_model, use_hf)
+    resolved_tokenizer = get_model_path("Qwen/Qwen3-TTS-Tokenizer-12Hz", use_hf)
+    
     prep_cmd = [
         "python", "src/prepare_data.py", 
         "--device", "cuda:0" if gpu_id != "cpu" else "cpu",
-        "--tokenizer_model_path", "Qwen/Qwen3-TTS-Tokenizer-12Hz", 
+        "--tokenizer_model_path", resolved_tokenizer, 
         "--input_jsonl", raw_jsonl, 
         "--output_jsonl", train_jsonl
     ]
@@ -132,7 +140,7 @@ def start_training(speaker_name, init_model, model_source, batch_size, lr, epoch
     
     cmd = [
         "python", "src/sft_12hz.py",
-        "--init_model_path", init_model,
+        "--init_model_path", resolved_init_model,
         "--output_model_path", output_dir,
         "--train_jsonl", train_jsonl,
         "--batch_size", str(batch_size),
@@ -199,7 +207,8 @@ def load_model(model_path, gpu_id):
     unload_model()
     
     try:
-        print(f"Loading {model_path} on {gpu_id}...")
+        resolved_model_path = get_model_path(model_path, use_hf=False)
+        print(f"Loading {resolved_model_path} on {gpu_id}...")
         env = os.environ.copy()
         env["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
         os.environ["CUDA_VISIBLE_DEVICES"] = env["CUDA_VISIBLE_DEVICES"]
@@ -210,7 +219,7 @@ def load_model(model_path, gpu_id):
         from qwen_tts import Qwen3TTSModel
         
         global_tts_model = Qwen3TTSModel.from_pretrained(
-            model_path,
+            resolved_model_path,
             device_map=target_device,
             torch_dtype=torch.bfloat16,
             attn_implementation="flash_attention_2" if target_device.startswith("cuda") else None,
