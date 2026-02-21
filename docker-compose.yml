@@ -24,3 +24,6 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - VLLM_USE_MODELSCOPE=true
+      - HF_HOME=/workspace/models/huggingface
+      - MODELSCOPE_CACHE=/workspace/models/modelscope
+      - PYTHONUNBUFFERED=1

@@ -6,6 +6,7 @@ import time
 import torch
 import gc
 import sys
+import threading
 
 # Ensure src in path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -41,6 +42,16 @@ def is_process_running(keyword):
         out = subprocess.check_output(["pgrep", "-f", keyword]).decode("utf-8").strip()
         return out != ""
     except: return False
+
+def tee_process_output(process, log_filepath, append=False):
+    mode = "a" if append else "w"
+    with open(log_filepath, mode) as f:
+        for line in iter(process.stdout.readline, ""):
+            if not line: break
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            f.write(line)
+            f.flush()
 
 # ----------------- Data Pipeline -----------------
 def run_data_prep(input_dir, ref_audio, speaker_name, model_id, asr_source, gpu_id, progress=gr.Progress()):
@@ -104,11 +115,19 @@ def start_training(speaker_name, init_model, model_source, batch_size, lr, epoch
         "--output_jsonl", train_jsonl
     ]
     
+    log_path = "training_log.txt"
+    with open(log_path, "w") as f:
+        f.write("=== Starting run ===\n")
+
     if not os.path.exists(train_jsonl):
-        print("Running prepare_data.py for audio codecs...")
+        print("Running prepare_data.py for audio codecs...", flush=True)
         try:
-            subprocess.run(prep_cmd, env=env, check=True)
-        except subprocess.CalledProcessError as e:
+            prep_proc = subprocess.Popen(prep_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            tee_process_output(prep_proc, log_path, append=True)
+            prep_proc.wait()
+            if prep_proc.returncode != 0:
+                return f"Error extracting codes. See docker logs."
+        except Exception as e:
             return f"Error extracting codes: {e}"
     
     cmd = [
@@ -129,8 +148,13 @@ def start_training(speaker_name, init_model, model_source, batch_size, lr, epoch
     else:
         env.pop("VLLM_USE_MODELSCOPE", None)
     
-    with open("training_log.txt", "w") as log_file:
-        training_process = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=subprocess.STDOUT)
+    print("Running sft_12hz.py...", flush=True)
+    training_process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    
+    # Thread to stream to console and file asynchronously
+    t = threading.Thread(target=tee_process_output, args=(training_process, log_path, True))
+    t.daemon = True
+    t.start()
     
     if not is_process_running("tensorboard --logdir logs"):
         subprocess.Popen(["tensorboard", "--logdir", "logs", "--port", "6006", "--bind_all"])
