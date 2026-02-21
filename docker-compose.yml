@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  tts-finetuner:
+    build: .
+    container_name: qwen3-tts-finetuner
+    ports:
+      - "7860:7860"
+      - "6006:6006"
+    volumes:
+      - ./final-dataset:/workspace/final-dataset
+      - ./output:/workspace/output
+      - ./logs:/workspace/logs
+      - ./models:/workspace/models
+      # Create a folder called `dataset` in the same directory as docker-compose.yml 
+      # to place your raw files easily.
+      - ./dataset:/workspace/dataset(nomark)
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_USE_MODELSCOPE=true

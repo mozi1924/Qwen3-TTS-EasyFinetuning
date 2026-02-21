@@ -1,0 +1,9 @@
+logs/
+output/
+final-dataset/
+dataset/
+models/
+__pycache__/
+.git/
+venv/
+*.whl
