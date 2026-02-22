@@ -37,5 +37,3 @@ def run():
     sf.write(args.output, wavs[0], sr)
     print(f"Done! Result saved to {args.output}")
 
-if __name__ == "__main__":
-    run()

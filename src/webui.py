@@ -1,201 +1,423 @@
-import gradio as gr
 import os
+import glob
 import subprocess
+import gradio as gr
 import json
+import threading
+from step1_audio_split import run_step_1 as internal_run_step_1
+from step2_asr_clean import run_step_2 as internal_run_step_2
+from prepare_data import run_prepare as internal_run_prepare
+from sft_12hz import run_train as internal_run_train
+
 import time
 import torch
 import gc
 import sys
-import threading
 
-# Ensure src in path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from data_pipeline import run_pipeline
-from utils import get_model_path
 
-# ----------------- Globals & Utilities -----------------
+import time
+import torch
+import gc
+import sys
+import tqdm
+
+# Configure HF cache directory from environment variables ONLY ONCE
+hf_home = os.environ.get("HF_HOME") or os.environ.get("HUGGINGFACE_HUB_CACHE") or os.path.expanduser("~/.cache/huggingface")
+print(f"HF cache initialized to: {hf_home}")
+
+# ----------------- Tqdm Wrapper for Gradio -----------------
+class GradioTqdm(tqdm.tqdm):
+    def __init__(self, *args, **kwargs):
+        self._gr_progress = kwargs.pop("gr_progress", None)
+        super().__init__(*args, **kwargs)
+        
+    def update(self, n=1):
+        displayed = super().update(n)
+        if self._gr_progress and self.total:
+            # We use a slight delta to avoid flickering
+            self._gr_progress(self.n / self.total, desc=f"Downloading... {self.desc or ''}")
+        return displayed
+
+# Global references
 global_tts_model = None
 global_tts_model_path = None
 global_tts_device = None
+global_training_process = None
+
+# Removed redundant models_config.json loading as it is not present and presets are hardcoded below
+
 
 def get_gpus():
+    gpus = []
     if torch.cuda.is_available():
-        return [f"cuda:{i}" for i in range(torch.cuda.device_count())]
-    return ["cpu"]
+        for i in range(torch.cuda.device_count()):
+            gpus.append(f"cuda:{i}")
+    if not gpus:
+        gpus = ["cpu"]
+    return gpus
 
 def get_datasets():
-    if not os.path.exists("final-dataset"): return []
-    return [d for d in os.listdir("final-dataset") if os.path.isdir(os.path.join("final-dataset", d))]
+    dataset_path = os.path.abspath("final-dataset")
+    if not os.path.exists(dataset_path): return []
+    return [d for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))]
 
 def get_checkpoints():
-    if not os.path.exists("output"): return []
+    output_path = os.path.abspath("output")
+    if not os.path.exists(output_path): return []
     ckpts = []
-    for speaker in os.listdir("output"):
-        sp_path = os.path.join("output", speaker)
-        if os.path.isdir(sp_path):
-            for ckpt in os.listdir(sp_path):
-                if ckpt.startswith("checkpoint-"):
-                    ckpts.append(os.path.join(sp_path, ckpt))
-    return ckpts
+    for exp in os.listdir(output_path):
+        exp_dir = os.path.join(output_path, exp)
+        if not os.path.isdir(exp_dir): continue
+        for item in os.listdir(exp_dir):
+            if "checkpoint-epoch" in item:
+                ckpts.append(os.path.join(output_path, exp, item))
+    return sorted(ckpts)
 
-def is_process_running(keyword):
-    try:
-        out = subprocess.check_output(["pgrep", "-f", keyword]).decode("utf-8").strip()
-        return out != ""
-    except: return False
-
-def tee_process_output(process, log_filepath, append=False):
-    mode = "a" if append else "w"
-    with open(log_filepath, mode) as f:
-        for line in iter(process.stdout.readline, ""):
-            if not line: break
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            f.write(line)
-            f.flush()
-
-# ----------------- Data Pipeline -----------------
-def run_data_prep(input_dir, ref_audio, speaker_name, model_id, asr_source, gpu_id, progress=gr.Progress()):
-    if not speaker_name.strip(): return "Please specify a Speaker Name.", gr.update()
-    output_dir = os.path.join("final-dataset", speaker_name.strip())
-    os.makedirs(output_dir, exist_ok=True)
+def get_model_path(model_id, use_hf=False, gr_progress=None):
+    # Potential paths to check
+    model_name = model_id.split("/")[-1]
     
-    if asr_source == "HuggingFace":
-        os.environ["USE_HF"] = "1"
+    candidates = [
+        os.path.join("/workspace/models", model_id),
+        os.path.join("/workspace/models", model_name),
+        os.path.join("/workspace/models", model_id.replace(".", "___")),
+        os.path.join("/workspace/models", model_id.split("/")[0], model_name.replace(".", "___")),
+    ]
+    
+    for path in candidates:
+        if os.path.exists(path) and any(os.path.isfile(os.path.join(path, f)) for f in ["config.json", "model.safetensors", "pytorch_model.bin"]):
+            return path
+            
+    # If not found, prepare for download
+    local_path = os.path.join("/workspace/models", model_id)
+    tqdm_class = (lambda **kwargs: GradioTqdm(gr_progress=gr_progress, **kwargs)) if gr_progress else None
+
+
+    if use_hf:
+        print(f"Downloading {model_id} from HuggingFace to {local_path} (Universal Format)...")
+        from huggingface_hub import snapshot_download
+        return snapshot_download(model_id, local_dir=local_path, local_dir_use_symlinks=False, tqdm_class=tqdm_class)
     else:
-        os.environ.pop("USE_HF", None)
-        
-    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
-    
+        print(f"Downloading {model_id} from ModelScope to {local_path}...")
+        from modelscope import snapshot_download
+        # ModelScope doesn't easily expose tqdm_class in snapshot_download, but we'll try basic notification
+        if gr_progress: gr_progress(0.1, desc=f"Downloading {model_id} from ModelScope...")
+        return snapshot_download(model_id, cache_dir="/workspace/models")
+
+
+
+import multiprocessing as mp
+import queue
+import inspect
+
+global_training_stop_event = None
+
+def _run_worker(func, q, stop_event, env_vars, args, kwargs):
     try:
-        use_hf = (asr_source == "HuggingFace")
-        resolved_model_id = get_model_path(model_id, use_hf)
-        
-        success, msg = run_pipeline(
-            input_dir=input_dir,
-            ref_audio=ref_audio,
-            output_dir=output_dir,
-            model_id=resolved_model_id,
-            batch_size=16,
-            progress=progress
-        )
-        return msg, gr.update(choices=get_datasets(), value=speaker_name.strip())
+        import os
+        if env_vars:
+            os.environ.update(env_vars)
+            
+        if stop_event is not None:
+            kwargs['stop_event'] = stop_event
+        for item in func(*args, **kwargs):
+            q.put(item)
     except Exception as e:
-        return f"Error: {e}", gr.update()
+        import traceback
+        q.put({"type": "error", "msg": f"Worker Exception: {str(e)}\n{traceback.format_exc()}"})
+    finally:
+        q.put(None)
 
-# ----------------- Training -----------------
-training_process = None
-
-def start_training(speaker_name, init_model, model_source, batch_size, lr, epochs, grad_acc, gpu_id):
-    global training_process
+def stream_isolated(func, *args, **kwargs):
+    global global_training_stop_event
+    ctx = mp.get_context('spawn')
+    q = ctx.Queue()
     
-    unload_model() # Force unload model before training memory clears
-    
-    if training_process is not None and training_process.poll() is None:
-        return "Training is already running!"
+    stop_event = None
+    if getattr(func, '__name__', '') == 'run_train':
+        stop_event = ctx.Event()
+        global_training_stop_event = stop_event
         
-    if not speaker_name:
-        return "Please select a dataset/speaker from the dropdown."
-    
-    raw_jsonl = os.path.join("final-dataset", speaker_name, "tts_train.jsonl")
-    if not os.path.exists(raw_jsonl):
-        return f"JSONL file {raw_jsonl} not found. Please run data prep first."
+    import os
+    env_vars = {"CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", "")}
         
-    output_dir = os.path.join("output", speaker_name)
-    os.makedirs(output_dir, exist_ok=True)
+    p = ctx.Process(target=_run_worker, args=(func, q, stop_event, env_vars, args, kwargs))
+    p.start()
     
-    train_jsonl = raw_jsonl.replace(".jsonl", "_with_codes.jsonl")
-    
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
-    env["PYTHONPATH"] = "src:" + env.get("PYTHONPATH", "")
-    env["PYTHONUNBUFFERED"] = "1"  # Force unbuffered Python output for real-time logs
-    
-    use_hf = (model_source == "HuggingFace")
-    resolved_init_model = get_model_path(init_model, use_hf)
-    resolved_tokenizer = get_model_path("Qwen/Qwen3-TTS-Tokenizer-12Hz", use_hf)
-    
-    prep_cmd = [
-        "python", "src/prepare_data.py", 
-        "--device", "cuda:0" if gpu_id != "cpu" else "cpu",
-        "--tokenizer_model_path", resolved_tokenizer, 
-        "--input_jsonl", raw_jsonl, 
-        "--output_jsonl", train_jsonl
-    ]
-    
-    log_path = "training_log.txt"
-    with open(log_path, "w") as f:
-        f.write("=== Starting run ===\n")
-
-    if not os.path.exists(train_jsonl):
-        print("Running prepare_data.py for audio codecs...", flush=True)
+    while True:
         try:
-            prep_proc = subprocess.Popen(prep_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-            tee_process_output(prep_proc, log_path, append=True)
-            prep_proc.wait()
-            if prep_proc.returncode != 0:
-                return f"Error extracting codes. See docker logs."
-        except Exception as e:
-            return f"Error extracting codes: {e}"
+            item = q.get(timeout=0.2)
+            if item is None:
+                break
+            yield item
+        except queue.Empty:
+            if not p.is_alive():
+                break
+                
+    p.join()
+
+# ----------------- Step 1: Audio Split -----------------
+def run_step_1(input_dir, speaker_name, ref_audio, progress=gr.Progress()):
+    if not speaker_name.strip(): 
+        yield "Please specify a Speaker Name first."
+        return
+        
+    output_dir = os.path.abspath(os.path.join("final-dataset", speaker_name.strip(), "audio_24k"))
     
-    cmd = [
-        "python", "src/sft_12hz.py",
-        "--init_model_path", resolved_init_model,
-        "--output_model_path", output_dir,
-        "--train_jsonl", train_jsonl,
-        "--batch_size", str(batch_size),
-        "--lr", str(lr),
-        "--num_epochs", str(epochs),
-        "--speaker_name", speaker_name,
-        "--gradient_accumulation_steps", str(grad_acc),
-        "--resume_from_checkpoint", "latest"
-    ]
+    last_status = "Starting..."
+    ref_path = os.path.abspath(ref_audio) if ref_audio else None
     
-    if model_source == "ModelScope":
-        env["VLLM_USE_MODELSCOPE"] = "true"
-    else:
-        env.pop("VLLM_USE_MODELSCOPE", None)
+    for item in stream_isolated(internal_run_step_1, os.path.abspath(input_dir), output_dir, ref_path):
+        if isinstance(item, dict):
+            msg_type = item.get("type", "")
+            if msg_type == "progress":
+                progress(item.get("progress", 0), desc=item.get("desc", ""))
+                last_status = f"Running: {item.get('desc', '')}"
+            elif msg_type == "done":
+                progress(1.0, desc="Done")
+                yield f"Success: {item.get('msg', 'Completed')}"
+                return
+            elif msg_type == "error":
+                progress(0, desc="Error")
+                yield f"Error: {item.get('msg', 'Unknown Error')}"
+                return
+        elif isinstance(item, str):
+            last_status = item
+        yield last_status
+
+# ----------------- Step 2: ASR Transcription -----------------
+def run_step_2(speaker_name, asr_model, asr_source, gpu_id, progress=gr.Progress()):
+    if not speaker_name.strip(): 
+        yield "Please specify a Speaker Name first."
+        return
+
+    speaker_dir = os.path.abspath(os.path.join("final-dataset", speaker_name.strip()))
+    input_dir = os.path.join(speaker_dir, "audio_24k")
+    output_jsonl = os.path.join(speaker_dir, "tts_train.jsonl")
     
-    print("Running sft_12hz.py...", flush=True)
-    training_process = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    # Auto-detect ref audio from previous step
+    ref_24k = os.path.join(input_dir, "ref_24k.wav")
+    ref_path = ref_24k if os.path.exists(ref_24k) else ""
     
-    # Thread to stream to console and file asynchronously
-    t = threading.Thread(target=tee_process_output, args=(training_process, log_path, True))
-    t.daemon = True
-    t.start()
+    if not os.path.exists(input_dir):
+        yield f"Error: Directory {input_dir} not found. Please run Step 1 first."
+        return
+        
+    use_hf = (asr_source == "HuggingFace")
+    resolved_model_id = get_model_path(asr_model, use_hf, gr_progress=progress)
     
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
+
+    last_status = "Starting..."
+    for item in stream_isolated(internal_run_step_2, input_dir, ref_path, output_jsonl, resolved_model_id, batch_size=16):
+        if isinstance(item, dict):
+            msg_type = item.get("type", "")
+            if msg_type == "progress":
+                progress(item.get("progress", 0), desc=item.get("desc", ""))
+                last_status = f"Running: {item.get('desc', '')}"
+            elif msg_type == "done":
+                progress(1.0, desc="Done")
+                yield f"Success: {item.get('msg', 'Completed')}"
+                return
+            elif msg_type == "error":
+                progress(0, desc="Error")
+                yield f"Error: {item.get('msg', 'Unknown Error')}"
+                return
+        elif isinstance(item, str):
+            last_status = item
+        yield last_status
+
+# ----------------- Step 3: Tokenization -----------------
+def run_step_3(speaker_name, gpu_id, progress=gr.Progress()):
+    if not speaker_name.strip(): 
+        yield "Please specify a Speaker Name first."
+        return
+
+    speaker_dir = os.path.abspath(os.path.join("final-dataset", speaker_name.strip()))
+    input_jsonl = os.path.join(speaker_dir, "tts_train.jsonl")
+    output_jsonl = os.path.join(speaker_dir, "tts_train_with_codes.jsonl")
+    
+    if not os.path.exists(input_jsonl):
+        yield f"Error: File {input_jsonl} not found. Please run Data Prep Step 1 & 2 first."
+        return
+        
+    resolved_tokenizer = get_model_path("Qwen/Qwen3-TTS-Tokenizer-12Hz", use_hf=False, gr_progress=progress)
+    device = "cuda:0" if gpu_id != "cpu" else "cpu"
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
+
+    last_status = "Starting..."
+    for item in stream_isolated(internal_run_prepare, device, resolved_tokenizer, input_jsonl, output_jsonl):
+        if isinstance(item, dict):
+            msg_type = item.get("type", "")
+            if msg_type == "progress":
+                progress(item.get("progress", 0), desc=item.get("desc", ""))
+                last_status = f"Running: {item.get('desc', '')}"
+            elif msg_type == "done":
+                progress(1.0, desc="Done")
+                yield f"Success: {item.get('msg', 'Completed')}"
+                return
+            elif msg_type == "error":
+                progress(0, desc="Error")
+                yield f"Error: {item.get('msg', 'Unknown Error')}"
+                return
+        elif isinstance(item, str):
+            last_status = item
+        yield last_status
+
+
+# ----------------- Download Model -----------------
+def check_or_download_model(init_model, model_source, progress=gr.Progress()):
+    use_hf = (model_source == "HuggingFace")
+    progress(0, desc="Preparing download...")
+    try:
+        resolved_init_model = get_model_path(init_model, use_hf, gr_progress=progress)
+        return f"Model is ready at: {resolved_init_model}"
+    except Exception as e:
+        return f"Error downloading model: {e}"
+
+
+def check_tb():
+    def is_process_running(process_name):
+        try:
+            output = subprocess.check_output(["pgrep", "-f", process_name]).decode().strip()
+            return bool(output)
+        except subprocess.CalledProcessError:
+            return False
+
     if not is_process_running("tensorboard --logdir logs"):
         subprocess.Popen(["tensorboard", "--logdir", "logs", "--port", "6006", "--bind_all"])
+
+# ----------------- Training -----------------
+def start_training(experiment_name, speaker_name, init_model, model_source, batch_size, lr, epochs, grad_acc, gpu_id, progress=gr.Progress()):
+    global global_training_stop_event
+    
+    unload_model() # Force unload model before training memory clears
         
-    return f"Training started (PID: {training_process.pid})"
+    if not experiment_name or not speaker_name:
+        yield "Error: Please select or type an Experiment Name / Speaker Name.", ""
+        return
+    
+    train_jsonl = os.path.abspath(os.path.join("final-dataset", speaker_name, "tts_train_with_codes.jsonl"))
+    if not os.path.exists(train_jsonl):
+        yield f"Error: JSONL file {train_jsonl} not found. Please run tokenization (Step 1 -> 2 -> 3) first.", ""
+        return
+        
+    output_dir = os.path.abspath(os.path.join("output", experiment_name))
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Auto-save Configuration
+    config_path = os.path.join(output_dir, "training_config.json")
+    config_data = {
+        "speaker_name": speaker_name,
+        "init_model": init_model,
+        "model_source": model_source,
+        "batch_size": batch_size,
+        "lr": lr,
+        "epochs": epochs,
+        "grad_acc": grad_acc
+    }
+    with open(config_path, "w") as f:
+        json.dump(config_data, f, indent=4)
+        
+    use_hf = (model_source == "HuggingFace")
+    resolved_init_model = get_model_path(init_model, use_hf, gr_progress=progress)
+    
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
+
+    check_tb()
+    print(f"Starting in-process training on {gpu_id}...")
+    
+    log_history = []
+    last_status = "Starting..."
+    
+    gen = stream_isolated(
+        internal_run_train,
+        experiment_name=experiment_name,
+        init_model_path=resolved_init_model,
+        output_model_path=output_dir,
+        train_jsonl=train_jsonl,
+        speaker_name=speaker_name,
+        batch_size=batch_size,
+        lr=lr,
+        num_epochs=epochs,
+        gradient_accumulation_steps=grad_acc,
+        resume_from_checkpoint="latest"
+    )
+
+    try:
+        for item in gen:
+            if isinstance(item, dict):
+                msg_type = item.get("type", "")
+                if msg_type == "progress":
+                    progress(item.get("progress", 0), desc=item.get("desc", ""))
+                    last_status = f"Running: {item.get('desc', '')}"
+                elif msg_type == "train_progress":
+                    epoch = item.get("epoch", 0)
+                    step = item.get("step", 0)
+                    loss = item.get("loss", 0.0)
+                    if isinstance(step, int):
+                        desc_str = f"Epoch {epoch} | Step {step} | Loss: {loss:.4f}"
+                    else:
+                        desc_str = f"Epoch {epoch} | {step}"
+                    progress(0.5, desc=desc_str)
+                    last_status = desc_str
+                    log_history.append(desc_str)
+                elif msg_type == "done":
+                    progress(1.0, desc="Done")
+                    last_status = f"Success: {item.get('msg', 'Completed')}"
+                    log_history.append(last_status)
+                    yield last_status, "\n".join(log_history[-30:])
+                    return
+                elif msg_type == "error":
+                    progress(0, desc="Error")
+                    last_status = f"Error: {item.get('msg', 'Unknown Error')}"
+                    log_history.append(last_status)
+                    yield last_status, "\n".join(log_history[-30:])
+                    return
+            elif isinstance(item, str):
+                log_history.append(item)
+                last_status = item
+            yield last_status, "\n".join(log_history[-30:])
+    except Exception as e:
+        yield f"Error: Unhandled exception {str(e)}", "\n".join(log_history[-30:])
+
 
 def stop_training():
-    global training_process
-    if training_process is not None and training_process.poll() is None:
-        training_process.terminate()
-        return "Training stopped."
-    return "No training process running."
+    global global_training_stop_event
+    if global_training_stop_event is not None:
+        global_training_stop_event.set()
+        return "Notified training process to abort safely!"
+    return "No training process currently running."
 
-def read_logs():
-    if os.path.exists("training_log.txt"):
-        with open("training_log.txt", "r") as f:
-            lines = f.readlines()
+
+def load_experiment_config(experiment_name):
+    # Returns: preset_dropdown, init_model, t_batch, t_lr, t_epochs, t_grad, speaker_dropdown, status_text
+    config_path = os.path.join("output", experiment_name, "training_config.json")
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r") as f:
+                data = json.load(f)
             
-            status_summary = "Initializing / Downloading models..."
-            for line in reversed(lines):
-                if "Epoch" in line and "Step" in line and "Loss" in line:
-                    status_summary = f"🚀 **Training Progress**: {line.strip()}"
-                    break
-                elif "Resumed from checkpoint" in line:
-                    status_summary = f"🔄 **{line.strip()}**"
-                    break
-                elif "Loading checkpoint shards" in line or "Loading" in line:
-                    status_summary = f"⏬ **{line.strip()}**"
-                    break
+            # Detect preset based on model size for UI convenience
+            preset = "0.6B Model"
+            if "1.7B" in data.get("init_model", ""):
+                preset = "1.7B Model"
                 
-            log_tail = "".join(lines[-30:])
-            return status_summary, log_tail
-    return "Idle", "No logs available."
+            return (
+                preset,
+                data.get("init_model", "Qwen/Qwen3-TTS-12Hz-0.6B-Base"),
+                data.get("batch_size", 2),
+                data.get("lr", 1e-7),
+                data.get("epochs", 2),
+                data.get("grad_acc", 4),
+                data.get("speaker_name", ""),
+                f"Loaded configuration for experiment '{experiment_name}'"
+            )
+        except Exception as e:
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"Failed to load config: {e}"
+            
+    return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), "New experiment / No config found."
 
 # ----------------- Inference -----------------
 def load_model(model_path, gpu_id):
@@ -209,20 +431,17 @@ def load_model(model_path, gpu_id):
     try:
         resolved_model_path = get_model_path(model_path, use_hf=False)
         print(f"Loading {resolved_model_path} on {gpu_id}...")
-        env = os.environ.copy()
-        env["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
-        os.environ["CUDA_VISIBLE_DEVICES"] = env["CUDA_VISIBLE_DEVICES"]
         
         target_device = "cuda:0" if gpu_id != "cpu" else "cpu"
+        # We also set the default logic when initializing model so that it overrides what the script is running on
         
-        # dynamic import to avoid overhead if UI doesn't use it
         from qwen_tts import Qwen3TTSModel
         
         global_tts_model = Qwen3TTSModel.from_pretrained(
             resolved_model_path,
-            device_map=target_device,
+            device_map=gpu_id, # Actually pass the accurate gpu id e.g., cuda:1
             torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2" if target_device.startswith("cuda") else None,
+            attn_implementation="flash_attention_2" if "cuda" in gpu_id else None,
         )
         global_tts_model_path = model_path
         global_tts_device = gpu_id
@@ -271,7 +490,6 @@ def run_inference(model_path, speaker, text, gpu_id, progress=gr.Progress()):
 def on_checkpoint_change(ckpt_path):
     if ckpt_path and "output/" in ckpt_path:
         dirs = ckpt_path.replace("\\", "/").split("/")
-        # format is usually output/speaker_name/checkpoint-...
         if len(dirs) >= 3:
             return dirs[-2]
     return "my_speaker"
@@ -291,6 +509,10 @@ def apply_preset(preset_name):
     p = presets.get(preset_name, presets["0.6B Model"])
     return p["init_model"], p["lr"], p["epochs"], p["batch_size"], p["grad_acc"]
 
+def get_experiments():
+    if not os.path.exists("output"): return []
+    return [d for d in os.listdir("output") if os.path.isdir(os.path.join("output", d))]
+
 # ----------------- UI -----------------
 with gr.Blocks(title="Qwen3-TTS Easy Finetuning") as app:
     gr.Markdown("# 🎙️ Qwen3-TTS Easy Finetuning WebUI")
@@ -300,62 +522,90 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning") as app:
     
     with gr.Tabs():
         with gr.Tab("1. Data Preparation"):
-            gr.Markdown("Auto split, transcribe (ASR), clean, and resample your dataset to 24kHz.")
-            with gr.Row():
-                with gr.Column():
-                    speaker_name_input = gr.Textbox(label="Speaker Name (Required)", value="my_speaker", placeholder="e.g. crypto")
-                    input_dir = gr.Textbox(label="Raw WAVs Directory", value="/workspace/raw-dataset", placeholder="Directory containing wav files")
-                    ref_audio = gr.Textbox(label="Reference Audio Path (For TTS)", value="/workspace/raw-dataset/ref.wav", placeholder="Clear sounding audio clip (~3-10s)")
+            gr.Markdown("Autonomously clean, split, transcribe, and ready your data.")
+            
+            with gr.Box() if hasattr(gr, "Box") else gr.Group():
+                gr.Markdown("### Step 1: Audio Split and Silence Filter")
+                gr.Markdown("Reads the raw `.wav` folder and extracts chunks by filtering out silences, then resamples into an `audio_24k` folder.")
+                with gr.Row():
+                    global_speaker_input = gr.Textbox(label="Speaker Name / Dataset Name (Required)", value="my_speaker", info="Unique name to save everything under")
+                    input_dir = gr.Textbox(label="Raw WAVs Directory", value="/workspace/raw-dataset")
+                    ref_audio = gr.Textbox(label="Reference Audio Path (Optional)", value="/workspace/raw-dataset/ref.wav", info="Resampled to 24k and stored in dataset directory")
                 
-                with gr.Column():
+                step1_btn = gr.Button("▶️ Run Step 1: Audio Split & Ref Process", variant="primary")
+                step1_out = gr.Textbox(label="Step 1 Output", lines=1)
+
+            gr.Markdown("<br>")
+            
+            with gr.Box() if hasattr(gr, "Box") else gr.Group():
+                gr.Markdown("### Step 2: ASR Transcription & Cleaning")
+                gr.Markdown("Transcribes the `audio_24k` folder with a selected ASR model, outputs cleanly to `tts_train.jsonl`.")
+                with gr.Row():
                     asr_model = gr.Dropdown(["Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-0.6B"], label="ASR Model", value="Qwen/Qwen3-ASR-1.7B")
                     asr_source = gr.Radio(["ModelScope", "HuggingFace"], label="ASR Download Source", value="ModelScope")
                     gpu_asr = gr.Dropdown(gpus_list, label="GPU Device", value=default_gpu)
-                    prep_btn = gr.Button("Start Data Processing", variant="primary")
-                    prep_out = gr.Textbox(label="Processing Output", lines=5)
-        
+                
+                step2_btn = gr.Button("▶️ Run Step 2: ASR Transcription", variant="primary")
+                step2_out = gr.Textbox(label="Step 2 Output", lines=1)
+                
         with gr.Tab("2. Training (Fine-tuning)"):
-            gr.Markdown("Finetune Qwen3-TTS model with your processed dataset.")
+            gr.Markdown("Complete data tokenization and train the Qwen3-TTS model.")
+            
+            # Row 1: Configurations
             with gr.Row():
-                with gr.Column():
-                    with gr.Row():
-                        dataset_dropdown = gr.Dropdown(get_datasets(), label="Select Dataset / Speaker", value=None, scale=3)
-                        dataset_refresh_btn = gr.Button("🔄 Refresh", scale=1)
-                        
-                    preset_dropdown = gr.Dropdown(list(presets.keys()), label="Training Preset", value="0.6B Model")
+                with gr.Column(scale=2):
+                    experiment_dropdown = gr.Dropdown(get_experiments(), label="Experiment Name", allow_custom_value=True, info="Select existing or type a new one")
+
+                    exp_refresh_btn = gr.Button("🔄 Refresh / Load Config", size="sm")
+                with gr.Column(scale=2):
+                    speaker_dropdown = gr.Dropdown(get_datasets(), label="Select Target Speaker Data", allow_custom_value=True)
+                    spk_refresh_btn = gr.Button("🔄 Refresh Speakers", size="sm")
+                
+            with gr.Row():
+                with gr.Column():    
                     init_model = gr.Dropdown(["Qwen/Qwen3-TTS-12Hz-0.6B-Base", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"], label="Initial Model (Base)", value="Qwen/Qwen3-TTS-12Hz-0.6B-Base", allow_custom_value=True)
-                    model_source = gr.Radio(["ModelScope", "HuggingFace"], label="Model Download Source", value="HuggingFace")
-                    gpu_train = gr.Dropdown(gpus_list, label="GPU Device", value=default_gpu)
-                    
+                    model_source = gr.Radio(["ModelScope", "HuggingFace"], label="Source", value="HuggingFace")
                 with gr.Column():
+                    download_btn = gr.Button("⬇️ Check / Download Model", variant="secondary")
+                    download_log = gr.Textbox(label="Download Status", lines=1)
+                    
+            gr.Markdown("---")
+                    
+            # Row 2: Tokenization Data Prep
+            with gr.Box() if hasattr(gr, "Box") else gr.Group():
+                gr.Markdown("### Step 3: Data Tokenization")
+                gr.Markdown("Converts transcribed audio text entries to Audio Codes using Tokenizer. Required before training.")
+                with gr.Row():
+                    gpu_prep = gr.Dropdown(gpus_list, label="GPU Device for Tokenization", value=default_gpu)
+                step3_btn = gr.Button("▶️ Tokenize Data", variant="primary")
+                step3_out = gr.Textbox(label="Tokenization Logs", lines=1)
+                
+            gr.Markdown("---")
+            
+            # Row 3: Training Parameters
+            gr.Markdown("### Step 4: Final Training")
+            with gr.Row():
+                preset_dropdown = gr.Dropdown(list(presets.keys()), label="Training Preset", value="0.6B Model")
+                gpu_train = gr.Dropdown(gpus_list, label="GPU Device for Training", value=default_gpu)
+                
+            with gr.Accordion("Advanced Training Options", open=False):
+                with gr.Row():
                     t_lr = gr.Number(label="Learning Rate", value=1e-7)
                     t_epochs = gr.Slider(minimum=1, maximum=100, step=1, value=2, label="Epochs")
                     t_batch = gr.Slider(minimum=1, maximum=16, step=1, value=2, label="Batch Size")
                     t_grad = gr.Slider(minimum=1, maximum=16, step=1, value=4, label="Gradient Accumulation")
                     
             with gr.Row():
-                train_btn = gr.Button("Start Training", variant="primary")
-                stop_btn = gr.Button("Stop Training", variant="stop")
+                train_btn = gr.Button("🚀 Start Training", variant="primary")
+                stop_btn = gr.Button("🛑 Stop Training", variant="stop")
             
             with gr.Row():
                 train_status = gr.Textbox(label="Process Status", lines=1)
-                parsed_status = gr.Markdown("Idle")
-                
-            log_box = gr.Textbox(label="Live Training Logs", lines=10)
-            
-            # Auto refresh logs using gr.Timer
-            with gr.Row():
-                refresh_log_btn = gr.Button("Manual Refresh Logs")
-                auto_refresh = gr.Checkbox(label="Auto Refresh Logs (Every 3s)", value=False)
-                
-            timer = gr.Timer(3, active=False)
-            auto_refresh.change(lambda x: gr.Timer(active=x), auto_refresh, timer)
-            timer.tick(fn=read_logs, outputs=[parsed_status, log_box])
+                log_box = gr.Textbox(label="Live Training Logs (Streams automatically)", lines=10)
             
         with gr.Tab("3. Inference / Testing"):
-            gr.Markdown("Test your trained checkpoints. Model stays loaded in VRAM once selected.")
+            gr.Markdown("Test your trained checkpoints.")
             with gr.Row():
-                # Left Column: Inputs
                 with gr.Column(scale=1):
                     with gr.Row():
                         ckpt_dropdown = gr.Dropdown(get_checkpoints(), label="Select Checkpoint", value=None, scale=4)
@@ -367,7 +617,6 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning") as app:
                     
                     test_btn = gr.Button("Synthesize Audio", variant="primary")
                 
-                # Right Column: Outputs
                 with gr.Column(scale=1):
                     audio_out = gr.Audio(label="Generated Audio", interactive=False)
                     inference_status = gr.Textbox(label="Inference Status", lines=1)
@@ -378,14 +627,46 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning") as app:
                     unload_status = gr.Textbox(label="Unload Status", lines=1)
             
     # ------ Handlers ------
-    prep_btn.click(fn=run_data_prep, inputs=[input_dir, ref_audio, speaker_name_input, asr_model, asr_source, gpu_asr], outputs=[prep_out, dataset_dropdown])
-    dataset_refresh_btn.click(fn=refresh_datasets, outputs=[dataset_dropdown])
+    # Load config handler
+    def refresh_exps():
+        return gr.update(choices=get_experiments())
+    exp_refresh_btn.click(fn=refresh_exps, outputs=[experiment_dropdown])
+    spk_refresh_btn.click(fn=refresh_datasets, outputs=[speaker_dropdown])
+    
+    experiment_dropdown.change(
+        fn=load_experiment_config, 
+        inputs=[experiment_dropdown], 
+        outputs=[preset_dropdown, init_model, t_batch, t_lr, t_epochs, t_grad, speaker_dropdown, train_status]
+    )
+    
+    # Step 1
+    step1_btn.click(fn=run_step_1, inputs=[input_dir, global_speaker_input, ref_audio], outputs=[step1_out])
+    
+    # Step 2
+    step2_btn.click(fn=run_step_2, inputs=[global_speaker_input, asr_model, asr_source, gpu_asr], outputs=[step2_out])
+
+    
+    # Step 3
+    step3_btn.click(fn=run_step_3, inputs=[speaker_dropdown, gpu_prep], outputs=[step3_out])
+    
+    # Utilities
+    download_btn.click(fn=check_or_download_model, inputs=[init_model, model_source], outputs=[download_log])
     preset_dropdown.change(fn=apply_preset, inputs=[preset_dropdown], outputs=[init_model, t_lr, t_epochs, t_batch, t_grad])
+    # Also auto change preset when init model changes if it matches
+    def auto_preset(model_val):
+        if "1.7B" in model_val: return "1.7B Model"
+        return "0.6B Model"
+    init_model.change(fn=auto_preset, inputs=[init_model], outputs=[preset_dropdown])
     
-    train_btn.click(fn=start_training, inputs=[dataset_dropdown, init_model, model_source, t_batch, t_lr, t_epochs, t_grad, gpu_train], outputs=[train_status])
+    # Training
+    train_btn.click(
+        fn=start_training, 
+        inputs=[experiment_dropdown, speaker_dropdown, init_model, model_source, t_batch, t_lr, t_epochs, t_grad, gpu_train], 
+        outputs=[train_status, log_box]
+    )
     stop_btn.click(fn=stop_training, outputs=[train_status])
-    refresh_log_btn.click(fn=read_logs, outputs=[parsed_status, log_box])
     
+    # Inference
     ckpt_refresh_btn.click(fn=refresh_checkpoints, outputs=[ckpt_dropdown])
     ckpt_dropdown.change(fn=on_checkpoint_change, inputs=[ckpt_dropdown], outputs=[test_speaker])
     unload_btn.click(fn=unload_model, outputs=[unload_status])

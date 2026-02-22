@@ -13,6 +13,8 @@ services:
       - ./logs:/workspace/logs
       - ./models:/workspace/models
       - ./raw-dataset:/workspace/raw-dataset
+      - ./src:/workspace/src
+
     restart: unless-stopped
     deploy:
       resources:

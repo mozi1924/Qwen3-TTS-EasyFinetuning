@@ -143,15 +143,3 @@ def run_pipeline(input_dir, ref_audio, output_dir, model_id="Qwen/Qwen3-ASR-1.7B
     if progress: progress(1.0, desc="Pipeline Completed!")
     return True, f"Successfully processed {len(final_entries)} segments. Saved to {final_jsonl}"
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input_dir", type=str, required=True)
-    parser.add_argument("--ref_audio", type=str, required=True)
-    parser.add_argument("--output_dir", type=str, required=True)
-    parser.add_argument("--model_id", type=str, default="Qwen/Qwen3-ASR-1.7B")
-    parser.add_argument("--batch_size", type=int, default=16)
-    args = parser.parse_args()
-    
-    success, msg = run_pipeline(args.input_dir, args.ref_audio, args.output_dir, args.model_id, args.batch_size)
-    print(msg)

@@ -42,12 +42,13 @@ class TTSDataset(Dataset):
     
     def _load_audio_to_np(self, x: str) -> Tuple[np.ndarray, int]:
         
-        audio, sr = librosa.load(x, sr=None, mono=True)
+        audio, sr = librosa.load(x, sr=24000, mono=True)
 
         if audio.ndim > 1:
             audio = np.mean(audio, axis=-1)
 
         return audio.astype(np.float32), int(sr)
+
 
     def _normalize_audio_inputs(self, audios: Union[AudioLike, List[AudioLike]]) -> List[Tuple[np.ndarray, int]]:
         """
