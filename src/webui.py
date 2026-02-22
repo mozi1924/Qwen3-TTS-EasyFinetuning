@@ -514,7 +514,92 @@ def get_experiments():
     return [d for d in os.listdir("output") if os.path.isdir(os.path.join("output", d))]
 
 # ----------------- UI -----------------
-with gr.Blocks(title="Qwen3-TTS Easy Finetuning") as app:
+css = """
+/* Global Styles */
+.gradio-container {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* Remove gray boxes behind text and group containers */
+.gr-group, .gr-box, .secondary.svelte-10f983z {
+    background-color: rgba(255, 255, 255, 0.02) !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2) !important;
+    padding: 20px !important;
+    margin-bottom: 24px !important;
+}
+
+/* Remove backgrounds from labels and markdown headers */
+.gr-label, .gr-markdown {
+    background-color: transparent !important;
+}
+
+label span, .gr-markdown h3 {
+    background: transparent !important;
+    color: #eee !important;
+}
+
+/* Unify input heights and alignment */
+.gr-input, .gr-dropdown, .gr-radio, .gr-number, .gr-slider {
+    background-color: rgba(0, 0, 0, 0.2) !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    border-radius: 8px !important;
+}
+
+/* Ensure Row items align at the top */
+.gr-row {
+    align-items: flex-start !important;
+    gap: 16px !important;
+}
+
+/* Premium Button Styling */
+.gr-button-primary {
+    background: linear-gradient(135deg, #ff4c00 0%, #ff8c00 100%) !important;
+    border: none !important;
+    color: white !important;
+    font-weight: 600 !important;
+    border-radius: 8px !important;
+    transition: all 0.3s ease !important;
+    box-shadow: 0 4px 12px rgba(255, 76, 0, 0.3) !important;
+}
+
+.gr-button-primary:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 16px rgba(255, 76, 0, 0.4) !important;
+}
+
+.gr-button-stop {
+    background: linear-gradient(135deg, #ff2e2e 0%, #ff5e5e 100%) !important;
+    border: none !important;
+    color: white !important;
+    font-weight: 600 !important;
+    border-radius: 8px !important;
+}
+
+/* Progress bar styling */
+.gr-progress {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    border-radius: 4px !important;
+}
+
+/* Tab styling */
+.gr-tabs {
+    border: none !important;
+}
+
+.gr-tab-item {
+    border-radius: 8px 8px 0 0 !important;
+    font-weight: 500 !important;
+}
+
+.gr-tab-item.selected {
+    border-bottom: 2px solid #ff4c00 !important;
+    color: #ff4c00 !important;
+}
+"""
+
+with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
     gr.Markdown("# 🎙️ Qwen3-TTS Easy Finetuning WebUI")
     
     gpus_list = get_gpus()
@@ -524,26 +609,59 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning") as app:
         with gr.Tab("1. Data Preparation"):
             gr.Markdown("Autonomously clean, split, transcribe, and ready your data.")
             
-            with gr.Box() if hasattr(gr, "Box") else gr.Group():
+            with gr.Column(elem_classes="gr-group"):
                 gr.Markdown("### Step 1: Audio Split and Silence Filter")
                 gr.Markdown("Reads the raw `.wav` folder and extracts chunks by filtering out silences, then resamples into an `audio_24k` folder.")
                 with gr.Row():
-                    global_speaker_input = gr.Textbox(label="Speaker Name / Dataset Name (Required)", value="my_speaker", info="Unique name to save everything under")
-                    input_dir = gr.Textbox(label="Raw WAVs Directory", value="/workspace/raw-dataset")
-                    ref_audio = gr.Textbox(label="Reference Audio Path (Optional)", value="/workspace/raw-dataset/ref.wav", info="Resampled to 24k and stored in dataset directory")
+                    global_speaker_input = gr.Textbox(
+                        label="Speaker Name / Dataset Name", 
+                        value="my_speaker", 
+                        info="Required: Unique name for storage",
+                        scale=1
+                    )
+                    input_dir = gr.Textbox(
+                        label="Raw WAVs Directory", 
+                        value="/workspace/raw-dataset",
+                        info="Folder containing source .wav files",
+                        scale=1
+                    )
+                    ref_audio = gr.Textbox(
+                        label="Reference Audio Path", 
+                        value="/workspace/raw-dataset/ref.wav", 
+                        info="Optional: Resampled to 24k",
+                        scale=1
+                    )
                 
                 step1_btn = gr.Button("▶️ Run Step 1: Audio Split & Ref Process", variant="primary")
                 step1_out = gr.Textbox(label="Step 1 Output", lines=1)
 
             gr.Markdown("<br>")
             
-            with gr.Box() if hasattr(gr, "Box") else gr.Group():
+            with gr.Column(elem_classes="gr-group"):
                 gr.Markdown("### Step 2: ASR Transcription & Cleaning")
                 gr.Markdown("Transcribes the `audio_24k` folder with a selected ASR model, outputs cleanly to `tts_train.jsonl`.")
                 with gr.Row():
-                    asr_model = gr.Dropdown(["Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-0.6B"], label="ASR Model", value="Qwen/Qwen3-ASR-1.7B")
-                    asr_source = gr.Radio(["ModelScope", "HuggingFace"], label="ASR Download Source", value="ModelScope")
-                    gpu_asr = gr.Dropdown(gpus_list, label="GPU Device", value=default_gpu)
+                    asr_model = gr.Dropdown(
+                        ["Qwen/Qwen3-ASR-1.7B", "Qwen/Qwen3-ASR-0.6B"], 
+                        label="ASR Model", 
+                        value="Qwen/Qwen3-ASR-1.7B",
+                        info="Select recognition model size",
+                        scale=2
+                    )
+                    asr_source = gr.Radio(
+                        ["ModelScope", "HuggingFace"], 
+                        label="Download Source", 
+                        value="ModelScope",
+                        info="Preferred hub for ASR model",
+                        scale=1
+                    )
+                    gpu_asr = gr.Dropdown(
+                        gpus_list, 
+                        label="GPU Device", 
+                        value=default_gpu,
+                        info="Device for ASR processing",
+                        scale=1
+                    )
                 
                 step2_btn = gr.Button("▶️ Run Step 2: ASR Transcription", variant="primary")
                 step2_out = gr.Textbox(label="Step 2 Output", lines=1)
@@ -551,80 +669,88 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning") as app:
         with gr.Tab("2. Training (Fine-tuning)"):
             gr.Markdown("Complete data tokenization and train the Qwen3-TTS model.")
             
-            # Row 1: Configurations
-            with gr.Row():
-                with gr.Column(scale=2):
-                    experiment_dropdown = gr.Dropdown(get_experiments(), label="Experiment Name", allow_custom_value=True, info="Select existing or type a new one")
-
-                    exp_refresh_btn = gr.Button("🔄 Refresh / Load Config", size="sm")
-                with gr.Column(scale=2):
-                    speaker_dropdown = gr.Dropdown(get_datasets(), label="Select Target Speaker Data", allow_custom_value=True)
-                    spk_refresh_btn = gr.Button("🔄 Refresh Speakers", size="sm")
+            with gr.Column(elem_classes="gr-group"):
+                gr.Markdown("### Step 0: Model Selection & Environment")
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        experiment_dropdown = gr.Dropdown(get_experiments(), label="Experiment Name", allow_custom_value=True, info="Select existing or type a new one")
+                        exp_refresh_btn = gr.Button("🔄 Refresh / Load Config", size="sm")
+                    with gr.Column(scale=2):
+                        speaker_dropdown = gr.Dropdown(get_datasets(), label="Select Target Speaker Data", allow_custom_value=True, info="Source dataset for fine-tuning")
+                        spk_refresh_btn = gr.Button("🔄 Refresh Speakers", size="sm")
                 
-            with gr.Row():
-                with gr.Column():    
-                    init_model = gr.Dropdown(["Qwen/Qwen3-TTS-12Hz-0.6B-Base", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"], label="Initial Model (Base)", value="Qwen/Qwen3-TTS-12Hz-0.6B-Base", allow_custom_value=True)
-                    model_source = gr.Radio(["ModelScope", "HuggingFace"], label="Source", value="HuggingFace")
-                with gr.Column():
-                    download_btn = gr.Button("⬇️ Check / Download Model", variant="secondary")
-                    download_log = gr.Textbox(label="Download Status", lines=1)
+                with gr.Row():
+                    with gr.Column():    
+                        init_model = gr.Dropdown(["Qwen/Qwen3-TTS-12Hz-0.6B-Base", "Qwen/Qwen3-TTS-12Hz-1.7B-Base"], label="Initial Model (Base)", value="Qwen/Qwen3-TTS-12Hz-0.6B-Base", allow_custom_value=True, info="Starting weights")
+                        model_source = gr.Radio(["ModelScope", "HuggingFace"], label="Source", value="HuggingFace")
+                    with gr.Column():
+                        download_btn = gr.Button("⬇️ Check / Download Model", variant="secondary")
+                        download_log = gr.Textbox(label="Download Status", lines=1)
                     
             gr.Markdown("---")
                     
             # Row 2: Tokenization Data Prep
-            with gr.Box() if hasattr(gr, "Box") else gr.Group():
+            with gr.Column(elem_classes="gr-group"):
                 gr.Markdown("### Step 3: Data Tokenization")
                 gr.Markdown("Converts transcribed audio text entries to Audio Codes using Tokenizer. Required before training.")
                 with gr.Row():
-                    gpu_prep = gr.Dropdown(gpus_list, label="GPU Device for Tokenization", value=default_gpu)
+                    gpu_prep = gr.Dropdown(
+                        gpus_list, 
+                        label="GPU Device for Tokenization", 
+                        value=default_gpu,
+                        info="Used for encoding audio into tokens",
+                        scale=1
+                    )
                 step3_btn = gr.Button("▶️ Tokenize Data", variant="primary")
                 step3_out = gr.Textbox(label="Tokenization Logs", lines=1)
                 
             gr.Markdown("---")
             
             # Row 3: Training Parameters
-            gr.Markdown("### Step 4: Final Training")
-            with gr.Row():
-                preset_dropdown = gr.Dropdown(list(presets.keys()), label="Training Preset", value="0.6B Model")
-                gpu_train = gr.Dropdown(gpus_list, label="GPU Device for Training", value=default_gpu)
-                
-            with gr.Accordion("Advanced Training Options", open=False):
+            with gr.Column(elem_classes="gr-group"):
+                gr.Markdown("### Step 4: Final Training")
                 with gr.Row():
-                    t_lr = gr.Number(label="Learning Rate", value=1e-7)
-                    t_epochs = gr.Slider(minimum=1, maximum=100, step=1, value=2, label="Epochs")
-                    t_batch = gr.Slider(minimum=1, maximum=16, step=1, value=2, label="Batch Size")
-                    t_grad = gr.Slider(minimum=1, maximum=16, step=1, value=4, label="Gradient Accumulation")
+                    preset_dropdown = gr.Dropdown(list(presets.keys()), label="Training Preset", value="0.6B Model", info="Optimized parameter sets")
+                    gpu_train = gr.Dropdown(gpus_list, label="GPU Device for Training", value=default_gpu, info="Target GPU for SFT")
                     
-            with gr.Row():
-                train_btn = gr.Button("🚀 Start Training", variant="primary")
-                stop_btn = gr.Button("🛑 Stop Training", variant="stop")
-            
-            with gr.Row():
-                train_status = gr.Textbox(label="Process Status", lines=1)
-                log_box = gr.Textbox(label="Live Training Logs (Streams automatically)", lines=10)
+                with gr.Accordion("Advanced Training Options", open=False):
+                    with gr.Row():
+                        t_lr = gr.Number(label="Learning Rate", value=1e-7)
+                        t_epochs = gr.Slider(minimum=1, maximum=100, step=1, value=2, label="Epochs")
+                        t_batch = gr.Slider(minimum=1, maximum=16, step=1, value=2, label="Batch Size")
+                        t_grad = gr.Slider(minimum=1, maximum=16, step=1, value=4, label="Gradient Accumulation")
+                        
+                with gr.Row():
+                    train_btn = gr.Button("🚀 Start Training", variant="primary", elem_classes="gr-button-primary")
+                    stop_btn = gr.Button("🛑 Stop Training", variant="stop", elem_classes="gr-button-stop")
+                
+                with gr.Row():
+                    train_status = gr.Textbox(label="Process Status", lines=1)
+                    log_box = gr.Textbox(label="Live Training Logs (Streams automatically)", lines=10)
             
         with gr.Tab("3. Inference / Testing"):
             gr.Markdown("Test your trained checkpoints.")
-            with gr.Row():
-                with gr.Column(scale=1):
-                    with gr.Row():
-                        ckpt_dropdown = gr.Dropdown(get_checkpoints(), label="Select Checkpoint", value=None, scale=4)
-                        ckpt_refresh_btn = gr.Button("🔄", scale=1)
+            with gr.Column(elem_classes="gr-group"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        with gr.Row():
+                            ckpt_dropdown = gr.Dropdown(get_checkpoints(), label="Select Checkpoint", value=None, scale=4, info="Select a .pt or .safetensors checkpoint")
+                            ckpt_refresh_btn = gr.Button("🔄", scale=1)
+                            
+                        test_speaker = gr.Textbox(label="Speaker Name (Auto-filled)", value="my_speaker", info="Target voice ID")
+                        test_text = gr.Textbox(label="Text to Synthesize", value="Hello, this is a test from my custom voice.", lines=4)
+                        gpu_infer = gr.Dropdown(gpus_list, label="GPU Device", value=default_gpu, info="Inference device")
                         
-                    test_speaker = gr.Textbox(label="Speaker Name (Auto-filled)", value="my_speaker")
-                    test_text = gr.Textbox(label="Text to Synthesize", value="Hello, this is a test from my custom voice.", lines=4)
-                    gpu_infer = gr.Dropdown(gpus_list, label="GPU Device", value=default_gpu)
+                        test_btn = gr.Button("Synthesize Audio", variant="primary", elem_classes="gr-button-primary")
                     
-                    test_btn = gr.Button("Synthesize Audio", variant="primary")
-                
-                with gr.Column(scale=1):
-                    audio_out = gr.Audio(label="Generated Audio", interactive=False)
-                    inference_status = gr.Textbox(label="Inference Status", lines=1)
-                    
-                    gr.Markdown("---")
-                    gr.Markdown("### Memory Management")
-                    unload_btn = gr.Button("Unload Model from VRAM", variant="stop")
-                    unload_status = gr.Textbox(label="Unload Status", lines=1)
+                    with gr.Column(scale=1):
+                        audio_out = gr.Audio(label="Generated Audio", interactive=False)
+                        inference_status = gr.Textbox(label="Inference Status", lines=1)
+                        
+                        gr.Markdown("---")
+                        gr.Markdown("### Memory Management")
+                        unload_btn = gr.Button("Unload Model from VRAM", variant="stop", elem_classes="gr-button-stop")
+                        unload_status = gr.Textbox(label="Unload Status", lines=1)
             
     # ------ Handlers ------
     # Load config handler
