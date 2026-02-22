@@ -29,8 +29,13 @@ While zero-shot voice cloning is convenient, fine-tuning (SFT) offers significan
 
 **Using Docker (Recommended)**
 ```bash
-docker compose up -d  # Using docker-compose
-# OR
+# 默认从 GHCR 拉取预构建镜像 (Default: pull from GHCR)
+docker compose up -d
+
+# 如果需要强制本地构建 (To force a local build)
+docker compose up -d --build
+
+# 或者手动构建与运行 (Or manual build and run)
 docker build -t qwen3-tts-finetuner .
 docker run --gpus all -it -v $(pwd):/workspace qwen3-tts-finetuner
 ```

@@ -7,3 +7,5 @@ __pycache__/
 .git/
 venv/
 *.whl
+raw-dataset/
+data/

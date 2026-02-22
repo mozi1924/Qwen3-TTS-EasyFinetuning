@@ -2,7 +2,10 @@ version: '3.8'
 
 services:
   tts-finetuner:
-    build: .
+    image: ${DOCKER_IMAGE:-ghcr.io/mozi1924/qwen3-tts-easyfinetuning:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: qwen3-tts-finetuner
     ports:
       - "7860:7860"
