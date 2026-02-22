@@ -288,6 +288,14 @@ def check_tb():
     if not is_process_running("tensorboard --logdir logs"):
         subprocess.Popen(["tensorboard", "--logdir", "logs", "--port", "6006", "--bind_all"])
 
+def stop_tensorboard():
+    try:
+        # Use pkill with full string to avoid killing other things
+        subprocess.run(["pkill", "-f", "tensorboard --logdir logs"], check=False)
+        return "Tensorboard server stopped."
+    except Exception as e:
+        return f"Error stopping Tensorboard: {e}"
+
 # ----------------- Training -----------------
 def start_training(experiment_name, speaker_name, init_model, model_source, batch_size, lr, epochs, grad_acc, gpu_id, progress=gr.Progress()):
     global global_training_stop_event
@@ -725,8 +733,13 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
                     stop_btn = gr.Button("🛑 Stop Training", variant="stop", elem_classes="gr-button-stop")
                 
                 with gr.Row():
-                    train_status = gr.Textbox(label="Process Status", lines=1)
-                    log_box = gr.Textbox(label="Live Training Logs (Streams automatically)", lines=10)
+                    with gr.Column(scale=3):
+                        train_status = gr.Textbox(label="Process Status", lines=1)
+                        with gr.Row():
+                            tb_link_btn = gr.Button("📊 Jump to Tensorboard", variant="secondary")
+                            tb_stop_btn = gr.Button("⏹️ Stop Tensorboard", variant="secondary")
+                    with gr.Column(scale=7):
+                        log_box = gr.Textbox(label="Live Training Logs (Streams automatically)", lines=10)
             
         with gr.Tab("3. Inference / Testing"):
             gr.Markdown("Test your trained checkpoints.")
@@ -791,6 +804,25 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
         outputs=[train_status, log_box]
     )
     stop_btn.click(fn=stop_training, outputs=[train_status])
+
+    # Tensorboard Handlers
+    tb_link_btn.click(
+        fn=None, 
+        inputs=[], 
+        outputs=[], 
+        js="""() => { 
+            let url = window.location.origin;
+            if (url.includes(':7860')) {
+                url = url.replace(':7860', ':6006');
+            } else if (window.location.hostname.includes('7860')) {
+                url = window.location.protocol + '//' + window.location.hostname.replace('7860', '6006');
+            } else {
+                url = window.location.protocol + '//' + window.location.hostname + ':6006';
+            }
+            window.open(url, '_blank'); 
+        }"""
+    )
+    tb_stop_btn.click(fn=stop_tensorboard, outputs=[train_status])
     
     # Inference
     ckpt_refresh_btn.click(fn=refresh_checkpoints, outputs=[ckpt_dropdown])

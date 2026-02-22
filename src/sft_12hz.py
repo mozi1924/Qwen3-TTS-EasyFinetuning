@@ -18,6 +18,9 @@ import json
 import os
 import shutil
 import gc
+import io
+import numpy as np
+import matplotlib.pyplot as plt
 
 import torch
 from accelerate import Accelerator
@@ -37,6 +40,29 @@ class DummyArgs:
 
 def format_train_progress(epoch, step, loss):
     return {"type": "train_progress", "epoch": epoch, "step": step, "loss": float(loss)}
+
+def plot_spectrogram_to_numpy(spectrogram):
+    """
+    spectrogram: (time, freq) or (freq, time)
+    Returns: numpy array HWC
+    """
+    if spectrogram.shape[0] > spectrogram.shape[1] and spectrogram.shape[1] == 128:
+        # Likely (time, freq), transpose to (freq, time)
+        spectrogram = spectrogram.T
+        
+    fig, ax = plt.subplots(figsize=(10, 4))
+    im = ax.imshow(spectrogram, aspect="auto", origin="lower", interpolation="none")
+    plt.colorbar(im, ax=ax)
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png")
+    plt.close(fig)
+    buf.seek(0)
+    
+    from PIL import Image
+    image = Image.open(buf).convert("RGB")
+    return np.array(image)
 
 def run_train(
     experiment_name,
@@ -204,7 +230,24 @@ def run_train(
 
                 if step % 10 == 0:
                     yield format_train_progress(epoch, step, loss.item())
-                    accelerator.log({"loss": loss.item()}, step=global_step)
+                    # Log more detailed metrics
+                    accelerator.log({
+                        "loss": loss.item(),
+                        "talker_loss": outputs.loss.item(),
+                        "sub_talker_loss": sub_talker_loss.item(),
+                        "lr": optimizer.param_groups[0]['lr']
+                    }, step=global_step)
+
+                # Log Mel-spectrogram periodically (e.g., every 500 steps)
+                if step % 500 == 0:
+                    if accelerator.is_main_process:
+                        try:
+                            # ref_mels is (batch, time, 128)
+                            mel_vis = plot_spectrogram_to_numpy(ref_mels[0].detach().cpu().float().numpy())
+                            tb_tracker = accelerator.get_tracker("tensorboard")
+                            tb_tracker.tracker.add_image("ref_mel", mel_vis, global_step, dataformats='HWC')
+                        except Exception as e:
+                            accelerator.print(f"Error logging Mel to Tensorboard: {e}")
 
             # Save accelerator state for resuming
             accelerator.wait_for_everyone()
