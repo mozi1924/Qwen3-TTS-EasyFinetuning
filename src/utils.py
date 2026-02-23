@@ -20,6 +20,12 @@ def get_model_path(model_id, use_hf=False):
     if os.path.exists(resolve_path(model_id)):
         return resolve_path(model_id)
         
+    # Check if it's a checkpoint in the output directory
+    output_candidate = resolve_path(os.path.join("output", model_id))
+    if os.path.exists(output_candidate):
+        print(f"Found local checkpoint at {output_candidate}")
+        return output_candidate
+        
     # Build explicitly mapped cache directory path
     root = get_project_root()
     local_dir = os.path.join(root, "models", model_id)

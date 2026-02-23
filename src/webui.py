@@ -63,18 +63,26 @@ def get_datasets():
     if not os.path.exists(dataset_path): return []
     return [d for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))]
 
-def get_checkpoints():
+def get_checkpoints(experiment_name=None, include_specials=True):
     output_path = resolve_path("output")
-    if not os.path.exists(output_path): return ["latest"]
-    ckpts = ["latest", "none"]
-    for exp in os.listdir(output_path):
+    ckpts = []
+    if include_specials:
+        ckpts = ["latest", "none"]
+    
+    if not os.path.exists(output_path): 
+        return ckpts if ckpts else []
+        
+    exps = [experiment_name] if experiment_name else os.listdir(output_path)
+    
+    found_ckpts = []
+    for exp in exps:
         exp_dir = os.path.join(output_path, exp)
         if not os.path.isdir(exp_dir): continue
         for item in sorted(os.listdir(exp_dir), reverse=True):
             if "checkpoint-epoch" in item:
-                # Store relative to output/exp for cleaner UI but use absolute internally if needed
-                ckpts.append(os.path.join(exp, item))
-    return ckpts
+                found_ckpts.append(os.path.join(exp, item))
+    
+    return ckpts + sorted(found_ckpts, reverse=True)
 
 # Removed local get_model_path as it's now imported from utils
 
@@ -333,7 +341,7 @@ def start_training(experiment_name, speaker_name, init_model, model_source, batc
         train_jsonl=train_jsonl,
         speaker_name=speaker_name,
         batch_size=batch_size,
-        lr=lr,
+        lr=float(lr) if isinstance(lr, str) else lr,
         num_epochs=epochs,
         gradient_accumulation_steps=grad_acc,
         resume_from_checkpoint=final_resume,
@@ -417,9 +425,10 @@ def load_experiment_config(experiment_name):
                 data = json.load(f)
             
             # Detect preset based on model size for UI convenience
-            preset = "0.6B Model"
+            preset = "Latest Config"
             if "1.7B" in data.get("init_model", ""):
-                preset = "1.7B Model"
+                 # We can keep it as Latest Config to show it's loaded from file
+                 pass
                 
             return (
                 preset,
@@ -431,12 +440,45 @@ def load_experiment_config(experiment_name):
                 data.get("speaker_name", ""),
                 data.get("use_experimental_speedup", False),
                 data.get("resume_from_checkpoint", "latest"),
-                f"Loaded configuration for experiment '{experiment_name}'"
+                f"Loaded configuration for experiment '{experiment_name}'",
+                gr.update(choices=get_checkpoints(experiment_name=experiment_name, include_specials=True))
             )
         except Exception as e:
-            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"Failed to load config: {e}"
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"Failed to load config: {e}", gr.update()
             
-    return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), "New experiment / No config found."
+    return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), "New experiment / No config found.", gr.update(choices=get_checkpoints(experiment_name=experiment_name, include_specials=True))
+
+def on_new_experiment(name):
+    if not name or not name.strip():
+        return [gr.update()]*11 + ["Error: Experiment name cannot be empty.", gr.update()]
+    
+    name = name.strip()
+    output_dir = resolve_path(os.path.join("output", name))
+    
+    if os.path.exists(output_dir):
+        # Exists
+        res = list(load_experiment_config(name))
+        res[-2] = f"Experiment '{name}' already exists. Switched to it and loaded configuration."
+        return [gr.update(choices=get_experiments(), value=name)] + res
+        
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        return [
+            gr.update(choices=get_experiments(), value=name), # experiment_dropdown
+            "0.6B Model", # preset
+            "Qwen/Qwen3-TTS-12Hz-0.6B-Base", # init_model
+            2, # batch
+            "1e-7", # lr
+            2, # epochs
+            4, # grad
+            "", # speaker
+            False, # speedup
+            "latest", # t_resume
+            f"Successfully created new experiment: {name}", # status
+            gr.update(choices=["latest", "none"], value="latest") # t_resume choices
+        ]
+    except Exception as e:
+        return [gr.update()]*11 + [f"Error creating experiment folder: {e}", gr.update()]
 
 # ----------------- Inference -----------------
 def load_model(model_path, gpu_id):
@@ -524,17 +566,25 @@ def on_checkpoint_change(ckpt_path):
     return gr.update()
 
 def refresh_checkpoints():
-    return gr.update(choices=get_checkpoints())
+    return gr.update(choices=get_checkpoints(include_specials=False))
 
 def refresh_datasets():
     return gr.update(choices=get_datasets())
 
 presets = {
     "0.6B Model": { "init_model": "Qwen/Qwen3-TTS-12Hz-0.6B-Base", "lr": 1e-7, "epochs": 2, "batch_size": 2, "grad_acc": 4 },
-    "1.7B Model": { "init_model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base", "lr": 2e-6, "epochs": 3, "batch_size": 2, "grad_acc": 1 }
+    "1.7B Model": { "init_model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base", "lr": 2e-6, "epochs": 3, "batch_size": 2, "grad_acc": 1 },
+    "Latest Config": {}
 }
 
-def apply_preset(preset_name):
+def apply_preset(preset_name, experiment_name):
+    if preset_name == "Latest Config" and experiment_name:
+        config_path = os.path.join("output", experiment_name, "training_config.json")
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                data = json.load(f)
+            return data.get("init_model"), data.get("lr"), data.get("epochs"), data.get("batch_size"), data.get("grad_acc")
+            
     p = presets.get(preset_name, presets["0.6B Model"])
     return p["init_model"], p["lr"], p["epochs"], p["batch_size"], p["grad_acc"]
 
@@ -711,7 +761,9 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
                 with gr.Row():
                     with gr.Column(scale=2):
                         experiment_dropdown = gr.Dropdown(get_experiments(), label="Experiment Name", allow_custom_value=True, info="Select existing or type a new one")
-                        exp_refresh_btn = gr.Button("🔄 Refresh / Load Config", size="sm")
+                        with gr.Row():
+                            exp_refresh_btn = gr.Button("🔄 Refresh", size="sm")
+                            exp_new_btn = gr.Button("➕ New", size="sm", variant="secondary")
                     with gr.Column(scale=2):
                         speaker_dropdown = gr.Dropdown(get_datasets(), label="Select Target Speaker Data", allow_custom_value=True, info="Source dataset for fine-tuning")
                         spk_refresh_btn = gr.Button("🔄 Refresh Speakers", size="sm")
@@ -752,14 +804,14 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
                     
                 with gr.Accordion("Advanced Training Options", open=False):
                     with gr.Row():
-                        t_lr = gr.Number(label="Learning Rate", value=1e-7)
+                        t_lr = gr.Textbox(label="Learning Rate", value="1e-7", info="e.g. 1e-7 or 0.000002")
                         t_epochs = gr.Slider(minimum=1, maximum=100, step=1, value=2, label="Epochs")
                         t_batch = gr.Slider(minimum=1, maximum=16, step=1, value=2, label="Batch Size")
                         t_grad = gr.Slider(minimum=1, maximum=16, step=1, value=4, label="Gradient Accumulation")
                     
                     with gr.Row():
                         t_speedup = gr.Checkbox(label="Use Experimental Training Method to Speed Up (Multi-core CPU)", value=False)
-                        t_resume = gr.Dropdown(get_checkpoints(), label="Resume From Checkpoint", value="latest", info="Select 'latest' to auto-resume, 'none' to restart, or a specific folder")
+                        t_resume = gr.Dropdown(get_checkpoints(include_specials=True), label="Resume From Checkpoint", value="latest", info="Select 'latest' to auto-resume, 'none' to restart, or a specific folder")
                         
                 with gr.Row():
                     train_btn = gr.Button("🚀 Start Training", variant="primary", elem_classes="gr-button-primary")
@@ -783,7 +835,7 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
                 with gr.Row():
                     with gr.Column(scale=1):
                         with gr.Row():
-                            ckpt_dropdown = gr.Dropdown(get_checkpoints(), label="Select Checkpoint", value=None, scale=4, info="Select a .pt or .safetensors checkpoint")
+                            ckpt_dropdown = gr.Dropdown(get_checkpoints(include_specials=False), label="Select Checkpoint", value=None, scale=4, info="Select a .pt or .safetensors checkpoint")
                             ckpt_refresh_btn = gr.Button("🔄", scale=1)
                             
                         load_model_btn = gr.Button("📥 Load & Query Model", variant="secondary")
@@ -812,12 +864,17 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
     def refresh_exps():
         return gr.update(choices=get_experiments())
     exp_refresh_btn.click(fn=refresh_exps, outputs=[experiment_dropdown])
+    
+    # New Experiment Handler
+    new_exp_outputs = [experiment_dropdown, preset_dropdown, init_model, t_batch, t_lr, t_epochs, t_grad, speaker_dropdown, t_speedup, t_resume, train_status, t_resume]
+    exp_new_btn.click(fn=on_new_experiment, inputs=[experiment_dropdown], outputs=new_exp_outputs)
+    
     spk_refresh_btn.click(fn=refresh_datasets, outputs=[speaker_dropdown])
     
     experiment_dropdown.change(
         fn=load_experiment_config, 
         inputs=[experiment_dropdown], 
-        outputs=[preset_dropdown, init_model, t_batch, t_lr, t_epochs, t_grad, speaker_dropdown, t_speedup, t_resume, train_status]
+        outputs=[preset_dropdown, init_model, t_batch, t_lr, t_epochs, t_grad, speaker_dropdown, t_speedup, t_resume, train_status, t_resume]
     )
     
     # Update training click handler
@@ -832,7 +889,7 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
     
     # Utilities
     download_btn.click(fn=check_or_download_model, inputs=[init_model, model_source], outputs=[download_log])
-    preset_dropdown.change(fn=apply_preset, inputs=[preset_dropdown], outputs=[init_model, t_lr, t_epochs, t_batch, t_grad])
+    preset_dropdown.change(fn=apply_preset, inputs=[preset_dropdown, experiment_dropdown], outputs=[init_model, t_lr, t_epochs, t_batch, t_grad])
     # Also auto change preset when init model changes if it matches
     def auto_preset(model_val):
         if "1.7B" in model_val: return "1.7B Model"
