@@ -1,33 +1,42 @@
 # Qwen3-TTS Easy Finetuning
 
-This repository provides an easy-to-use workspace for fine-tuning the Qwen3-TTS model. It streamlines the process from raw audio data to a custom voice model with high stability and expressiveness.
+<p align="center">
+  <img src="https://img.shields.io/github/stars/mozi1924/Qwen3-TTS-EasyFinetuning?style=for-the-badge&color=ffd700" alt="GitHub Stars">
+  <img src="https://img.shields.io/github/license/mozi1924/Qwen3-TTS-EasyFinetuning?style=for-the-badge&color=blue" alt="License">
+  <img src="https://img.shields.io/badge/Python-3.11+-blue?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/PyTorch-2.0+-ee4c2c?style=for-the-badge&logo=pytorch&logoColor=white" alt="PyTorch">
+</p>
+
+<p align="center">
+  <b>English</b> | <a href="./README_zh.md">简体中文</a>
+</p>
+
+An easy-to-use workspace for fine-tuning the **Qwen3-TTS** model. This repository streamlines the entire process—from raw audio ingestion to creating high-stability, expressive custom voice models.
 
 ---
 
-### Read my article
+### 📚 Tutorial
+For a comprehensive step-by-step guide with illustrations, please refer to my article:
 
-You can read my article for a detailed illustrated tutorial.
+👉 [English Article](https://mozi1924.com/article/qwen3-tts-finetuning-en/) | [中文文章](https://mozi1924.com/article/qwen3-tts-finetuning-zh/)
 
-[English](https://mozi1924.com/article/qwen3-tts-finetuning-en/)
+### 🎙️ Why Fine-tuning instead of Zero-shot?
 
-[中文](https://mozi1924.com/article/qwen3-tts-finetuning-zh/)
+While zero-shot voice cloning is convenient for quick tests, **Supervised Fine-Tuning (SFT)** offers significant advantages for production-grade results:
 
-### 🎙️ Why Fine-tuning instead of Zero-shot? / 为什么要进行微调？
-
-While zero-shot voice cloning is convenient, fine-tuning (SFT) offers significant advantages for production-quality results:
-
-- **Stability (音色更稳定)**: Fine-tuned models capture the nuances of the target speaker more accurately, resulting in consistent output across different sentences.
-- **Natural Control (支持自然语言指导)**: It supports natural language tone/rhythm guidance (e.g., "Speak sadly", "Faster pace"), allowing more expressive speech synthesis.
-- **Accent-free Cross-lingual (无母语口音)**: Prevents the "original language accent" during cross-lingual inference (e.g., a Chinese speaker's voice used for English speech will sound like a native English speaker).
+*   **Timbre Stability**: Fine-tuned models capture the intricate nuances of the target speaker more accurately, ensuring consistent output across diverse text contexts.
+*   **Expressive Control**: SFT supports natural language tone and rhythm guidance (e.g., "Speak sadly", "Faster pace"), enabling more emotive and human-like synthesis.
+*   **Accent-free Cross-lingual Synthesis**: Effectively prevents "original language accents" during cross-lingual inference (e.g., a Chinese-sounding voice used for English speech will sound like a native English speaker).
 
 ---
 
-## ✨ Features
-- **Integrated Pipeline**: Audio splitting, ASR transcription, cleaning, and tokenization in one click.
-- **Modern WebUI**: Premium Gradio interface for data preparation, training, and testing.
-- **Robust CLI**: Complete command-line tools for automated workflows.
-- **Training Presets**: Hardcoded optimized settings for different model sizes (0.6B / 1.7B).
-- **Docker Support**: Pre-configured environment for easy setup.
+## ✨ Key Features
+
+*   **Integrated Pipeline**: Automated audio splitting, ASR transcription, dataset cleaning, and tokenization in a single workflow.
+*   **Modern WebUI**: A premium Gradio interface for seamless data preparation, training monitoring, and interactive inference.
+*   **Robust CLI**: Unified command-line interface for professional automation and remote server management.
+*   **Optimized Presets**: Hardcoded, expert-tuned training parameters for different model variants (0.6B / 1.7B).
+*   **Docker Ready**: Out-of-the-box environment support via pre-configured Docker images.
 
 ---
 
@@ -37,22 +46,11 @@ While zero-shot voice cloning is convenient, fine-tuning (SFT) offers significan
 
 **Using Docker (Recommended)**
 ```bash
-# 默认从 GHCR 拉取预构建镜像 (Default: pull from GHCR)
+# Pull the pre-built image from GHCR (Default)
 docker compose up -d
 
-# 如果需要强制本地构建 (To force a local build)
+# Force a local build
 docker compose up -d --build
-```
-
-**Pushing to GHCR (Manual/Local Build)**
-由于预构建镜像较大（包含 CUDA 12.4 和 PyTorch），GitHub Actions 的免费版容器空间可能不足。建议在本地构建并推送：
-```bash
-# 首先登录 GHCR (Login first)
-# 使用你的 GitHub PAT (Personal Access Token)
-echo $YOUR_GITHUB_PAT | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-
-# 使用脚本构建并推送 (Build and push via script)
-./push_image.sh latest  # 或者指定 tag，如 ./push_image.sh v1.0
 ```
 
 **Using Python Virtual Environment**
@@ -66,19 +64,19 @@ pip install flash-attn==2.8.3 --no-build-isolation
 ```
 
 ### 2. Using the WebUI (Easiest)
-Run the Gradio WebUI to manage the entire process through your browser:
+Launch the Gradio WebUI to manage the entire lifecycle through your browser:
 ```bash
 python src/webui.py
 ```
-- **Data Prep Tab**: Upload raw audio -> Split -> ASR -> Tokenize.
-- **Training Tab**: Select dataset -> Configure settings -> Start Tensorboard -> Train.
-- **Inference Tab**: Load your trained checkpoint and generate audio!
+*   **Data Prep**: Upload raw audio -> Split -> ASR -> Tokenize.
+*   **Training**: Select dataset -> Configure settings -> Launch Tensorboard -> Start Training.
+*   **Inference**: Load your trained checkpoint and test your custom voice!
 
 ### 3. Using the CLI (Professional)
-The `src/cli.py` provides a unified entry point for all operations:
+The `src/cli.py` serves as a unified entry point for all operations:
 
 **Step A: Prepare Data**
-Put your raw `.wav` files in a folder (e.g., `raw-dataset/my_speaker/`).
+Place your raw `.wav` files in a directory (e.g., `raw-dataset/my_speaker/`).
 ```bash
 python src/cli.py prepare --input_dir raw-dataset/my_speaker --speaker_name my_speaker
 ```
@@ -96,18 +94,20 @@ python src/cli.py infer --checkpoint output/exp1/checkpoint-epoch-2 --speaker my
 ---
 
 ## 📂 Project Structure
-- `src/webui.py`: Main Gradio interface.
-- `src/cli.py`: Unified command-line interface.
-- `src/sft_12hz.py`: Core fine-tuning logic.
-- `src/step1_audio_split.py`: Audio preprocessing & segmentation.
-- `src/step2_asr_clean.py`: Automatic transcription & data labeling.
-- `src/prepare_data.py`: Pre-tokenizing audio into discrete codes (Step 3).
+
+*   `src/webui.py`: Main Gradio interface.
+*   `src/cli.py`: Unified command-line interface.
+*   `src/sft_12hz.py`: Core fine-tuning logic.
+*   `src/step1_audio_split.py`: Audio preprocessing & segmentation.
+*   `src/step2_asr_clean.py`: Automatic transcription & labeling.
+*   `src/prepare_data.py`: Pre-tokenizing audio into discrete codes (Step 3).
 
 ---
 
 ## 🤝 Acknowledgments
-- Based on [Qwen3-TTS](https://github.com/qwenLM/Qwen3-tts) and [Qwen3-ASR](https://github.com/qwenLM/Qwen3-asr).
-- Training presets inspired by community contributions (e.g., [rekuenkdr](https://github.com/rekuenkdr)).
+
+*   Built upon [Qwen3-TTS](https://github.com/qwenLM/Qwen3-tts) and [Qwen3-ASR](https://github.com/qwenLM/Qwen3-asr).
+*   Training presets inspired by community research (e.g., [rekuenkdr](https://github.com/rekuenkdr)).
 
 ---
 

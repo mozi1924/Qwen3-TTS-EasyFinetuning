@@ -13,6 +13,7 @@ import time
 import torch
 import gc
 import sys
+from utils import get_model_path, get_project_root, resolve_path
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -58,52 +59,24 @@ def get_gpus():
     return gpus
 
 def get_datasets():
-    dataset_path = os.path.abspath("final-dataset")
+    dataset_path = resolve_path("final-dataset")
     if not os.path.exists(dataset_path): return []
     return [d for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))]
 
 def get_checkpoints():
-    output_path = os.path.abspath("output")
-    if not os.path.exists(output_path): return []
-    ckpts = []
+    output_path = resolve_path("output")
+    if not os.path.exists(output_path): return ["latest"]
+    ckpts = ["latest", "none"]
     for exp in os.listdir(output_path):
         exp_dir = os.path.join(output_path, exp)
         if not os.path.isdir(exp_dir): continue
-        for item in os.listdir(exp_dir):
+        for item in sorted(os.listdir(exp_dir), reverse=True):
             if "checkpoint-epoch" in item:
-                ckpts.append(os.path.join(output_path, exp, item))
-    return sorted(ckpts)
+                # Store relative to output/exp for cleaner UI but use absolute internally if needed
+                ckpts.append(os.path.join(exp, item))
+    return ckpts
 
-def get_model_path(model_id, use_hf=False, gr_progress=None):
-    # Potential paths to check
-    model_name = model_id.split("/")[-1]
-    
-    candidates = [
-        os.path.join("/workspace/models", model_id),
-        os.path.join("/workspace/models", model_name),
-        os.path.join("/workspace/models", model_id.replace(".", "___")),
-        os.path.join("/workspace/models", model_id.split("/")[0], model_name.replace(".", "___")),
-    ]
-    
-    for path in candidates:
-        if os.path.exists(path) and any(os.path.isfile(os.path.join(path, f)) for f in ["config.json", "model.safetensors", "pytorch_model.bin"]):
-            return path
-            
-    # If not found, prepare for download
-    local_path = os.path.join("/workspace/models", model_id)
-    tqdm_class = (lambda **kwargs: GradioTqdm(gr_progress=gr_progress, **kwargs)) if gr_progress else None
-
-
-    if use_hf:
-        print(f"Downloading {model_id} from HuggingFace to {local_path} (Universal Format)...")
-        from huggingface_hub import snapshot_download
-        return snapshot_download(model_id, local_dir=local_path, local_dir_use_symlinks=False, tqdm_class=tqdm_class)
-    else:
-        print(f"Downloading {model_id} from ModelScope to {local_path}...")
-        from modelscope import snapshot_download
-        # ModelScope doesn't easily expose tqdm_class in snapshot_download, but we'll try basic notification
-        if gr_progress: gr_progress(0.1, desc=f"Downloading {model_id} from ModelScope...")
-        return snapshot_download(model_id, cache_dir="/workspace/models")
+# Removed local get_model_path as it's now imported from utils
 
 
 
@@ -163,12 +136,12 @@ def run_step_1(input_dir, speaker_name, ref_audio, progress=gr.Progress()):
         yield "Please specify a Speaker Name first."
         return
         
-    output_dir = os.path.abspath(os.path.join("final-dataset", speaker_name.strip(), "audio_24k"))
+    output_dir = resolve_path(os.path.join("final-dataset", speaker_name.strip(), "audio_24k"))
     
     last_status = "Starting..."
-    ref_path = os.path.abspath(ref_audio) if ref_audio else None
+    ref_path = resolve_path(ref_audio) if ref_audio else None
     
-    for item in stream_isolated(internal_run_step_1, os.path.abspath(input_dir), output_dir, ref_path):
+    for item in stream_isolated(internal_run_step_1, resolve_path(input_dir), output_dir, ref_path):
         if isinstance(item, dict):
             msg_type = item.get("type", "")
             if msg_type == "progress":
@@ -192,7 +165,7 @@ def run_step_2(speaker_name, asr_model, asr_source, gpu_id, progress=gr.Progress
         yield "Please specify a Speaker Name first."
         return
 
-    speaker_dir = os.path.abspath(os.path.join("final-dataset", speaker_name.strip()))
+    speaker_dir = resolve_path(os.path.join("final-dataset", speaker_name.strip()))
     input_dir = os.path.join(speaker_dir, "audio_24k")
     output_jsonl = os.path.join(speaker_dir, "tts_train.jsonl")
     
@@ -205,7 +178,7 @@ def run_step_2(speaker_name, asr_model, asr_source, gpu_id, progress=gr.Progress
         return
         
     use_hf = (asr_source == "HuggingFace")
-    resolved_model_id = get_model_path(asr_model, use_hf, gr_progress=progress)
+    resolved_model_id = get_model_path(asr_model, use_hf=use_hf)
     
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
 
@@ -229,20 +202,24 @@ def run_step_2(speaker_name, asr_model, asr_source, gpu_id, progress=gr.Progress
         yield last_status
 
 # ----------------- Step 3: Tokenization -----------------
-def run_step_3(speaker_name, gpu_id, progress=gr.Progress()):
-    if not speaker_name.strip(): 
-        yield "Please specify a Speaker Name first."
+def run_step_3(speaker_name, experiment_name, gpu_id, progress=gr.Progress()):
+    if not speaker_name.strip() or not experiment_name.strip(): 
+        yield "Please specify Speaker Name and Experiment Name."
         return
-
-    speaker_dir = os.path.abspath(os.path.join("final-dataset", speaker_name.strip()))
+ 
+    speaker_dir = resolve_path(os.path.join("final-dataset", speaker_name.strip()))
     input_jsonl = os.path.join(speaker_dir, "tts_train.jsonl")
-    output_jsonl = os.path.join(speaker_dir, "tts_train_with_codes.jsonl")
+    
+    # Save to logs/experiment_name/
+    log_dir = resolve_path(os.path.join("logs", experiment_name.strip()))
+    os.makedirs(log_dir, exist_ok=True)
+    output_jsonl = os.path.join(log_dir, "tts_train_with_codes.jsonl")
     
     if not os.path.exists(input_jsonl):
         yield f"Error: File {input_jsonl} not found. Please run Data Prep Step 1 & 2 first."
         return
         
-    resolved_tokenizer = get_model_path("Qwen/Qwen3-TTS-Tokenizer-12Hz", use_hf=False, gr_progress=progress)
+    resolved_tokenizer = get_model_path("Qwen/Qwen3-TTS-Tokenizer-12Hz", use_hf=False)
     device = "cuda:0" if gpu_id != "cpu" else "cpu"
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
 
@@ -269,9 +246,8 @@ def run_step_3(speaker_name, gpu_id, progress=gr.Progress()):
 # ----------------- Download Model -----------------
 def check_or_download_model(init_model, model_source, progress=gr.Progress()):
     use_hf = (model_source == "HuggingFace")
-    progress(0, desc="Preparing download...")
     try:
-        resolved_init_model = get_model_path(init_model, use_hf, gr_progress=progress)
+        resolved_init_model = get_model_path(init_model, use_hf=use_hf)
         return f"Model is ready at: {resolved_init_model}"
     except Exception as e:
         return f"Error downloading model: {e}"
@@ -297,7 +273,7 @@ def stop_tensorboard():
         return f"Error stopping Tensorboard: {e}"
 
 # ----------------- Training -----------------
-def start_training(experiment_name, speaker_name, init_model, model_source, batch_size, lr, epochs, grad_acc, gpu_id, use_experimental_speedup, progress=gr.Progress()):
+def start_training(experiment_name, speaker_name, init_model, model_source, batch_size, lr, epochs, grad_acc, gpu_id, use_experimental_speedup, resume_from_checkpoint, progress=gr.Progress()):
     global global_training_stop_event
     
     unload_model() # Force unload model before training memory clears
@@ -306,12 +282,12 @@ def start_training(experiment_name, speaker_name, init_model, model_source, batc
         yield "Error: Please select or type an Experiment Name / Speaker Name.", ""
         return
     
-    train_jsonl = os.path.abspath(os.path.join("final-dataset", speaker_name, "tts_train_with_codes.jsonl"))
+    train_jsonl = resolve_path(os.path.join("logs", experiment_name, "tts_train_with_codes.jsonl"))
     if not os.path.exists(train_jsonl):
         yield f"Error: JSONL file {train_jsonl} not found. Please run tokenization (Step 1 -> 2 -> 3) first.", ""
         return
         
-    output_dir = os.path.abspath(os.path.join("output", experiment_name))
+    output_dir = resolve_path(os.path.join("output", experiment_name))
     os.makedirs(output_dir, exist_ok=True)
     
     # Auto-save Configuration
@@ -324,13 +300,14 @@ def start_training(experiment_name, speaker_name, init_model, model_source, batc
         "lr": lr,
         "epochs": epochs,
         "grad_acc": grad_acc,
-        "use_experimental_speedup": use_experimental_speedup
+        "use_experimental_speedup": use_experimental_speedup,
+        "resume_from_checkpoint": resume_from_checkpoint
     }
     with open(config_path, "w") as f:
         json.dump(config_data, f, indent=4)
         
     use_hf = (model_source == "HuggingFace")
-    resolved_init_model = get_model_path(init_model, use_hf, gr_progress=progress)
+    resolved_init_model = get_model_path(init_model, use_hf=use_hf)
     
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
 
@@ -340,6 +317,14 @@ def start_training(experiment_name, speaker_name, init_model, model_source, batc
     log_history = []
     last_status = "Starting..."
     
+    # If resume_from_checkpoint is just an epoch folder name, prepend output directory
+    final_resume = resume_from_checkpoint
+    if resume_from_checkpoint and resume_from_checkpoint not in ["latest", "none"]:
+        if not os.path.isabs(resume_from_checkpoint):
+            final_resume = resolve_path(os.path.join("output", resume_from_checkpoint))
+    elif resume_from_checkpoint == "none":
+        final_resume = None
+
     gen = stream_isolated(
         internal_run_train,
         experiment_name=experiment_name,
@@ -351,7 +336,7 @@ def start_training(experiment_name, speaker_name, init_model, model_source, batc
         lr=lr,
         num_epochs=epochs,
         gradient_accumulation_steps=grad_acc,
-        resume_from_checkpoint="latest",
+        resume_from_checkpoint=final_resume,
         use_experimental_speedup=use_experimental_speedup
     )
 
@@ -375,7 +360,10 @@ def start_training(experiment_name, speaker_name, init_model, model_source, batc
                     # Add a tiny bit of step progress (assuming ~1000 steps per epoch as a guess, scaled to 1/total_epochs)
                     # This ensures the bar moves at least slightly every step update
                     if isinstance(step, int):
-                        step_progress = min(0.9, step / 1000.0) * (1.0 / total_epochs)
+                        # Attempt to use a more realistic total steps for progress bar
+                        # If we have debug info on len(train_dataloader) in logs, we can use it.
+                        # For now, stick with a slightly better heuristic or just stay at epoch progress.
+                        step_progress = min(0.95, step / 2000.0) * (1.0 / total_epochs)
                         current_progress = epoch_progress + step_progress
                         desc_str = f"Epoch {epoch} | Step {step} | Loss: {loss:.4f}"
                     else:
@@ -442,6 +430,7 @@ def load_experiment_config(experiment_name):
                 data.get("grad_acc", 4),
                 data.get("speaker_name", ""),
                 data.get("use_experimental_speedup", False),
+                data.get("resume_from_checkpoint", "latest"),
                 f"Loaded configuration for experiment '{experiment_name}'"
             )
         except Exception as e:
@@ -454,7 +443,13 @@ def load_model(model_path, gpu_id):
     global global_tts_model, global_tts_model_path, global_tts_device
     
     if global_tts_model_path == model_path and global_tts_device == gpu_id and global_tts_model is not None:
-        return "Model already loaded."
+        speakers = []
+        languages = []
+        if hasattr(global_tts_model, 'get_supported_speakers'):
+            speakers = global_tts_model.get_supported_speakers()
+        if hasattr(global_tts_model, 'get_supported_languages'):
+            languages = global_tts_model.get_supported_languages()
+        return "Model already loaded.", speakers, languages
         
     unload_model()
     
@@ -462,22 +457,27 @@ def load_model(model_path, gpu_id):
         resolved_model_path = get_model_path(model_path, use_hf=False)
         print(f"Loading {resolved_model_path} on {gpu_id}...")
         
-        target_device = "cuda:0" if gpu_id != "cpu" else "cpu"
-        # We also set the default logic when initializing model so that it overrides what the script is running on
-        
         from qwen_tts import Qwen3TTSModel
         
         global_tts_model = Qwen3TTSModel.from_pretrained(
             resolved_model_path,
-            device_map=gpu_id, # Actually pass the accurate gpu id e.g., cuda:1
+            device_map=gpu_id, 
             torch_dtype=torch.bfloat16,
             attn_implementation="flash_attention_2" if "cuda" in gpu_id else None,
         )
         global_tts_model_path = model_path
         global_tts_device = gpu_id
-        return f"Loaded {model_path} successfully."
+        
+        speakers = []
+        languages = []
+        if hasattr(global_tts_model, 'get_supported_speakers'):
+            speakers = global_tts_model.get_supported_speakers()
+        if hasattr(global_tts_model, 'get_supported_languages'):
+            languages = global_tts_model.get_supported_languages()
+            
+        return f"Loaded {model_path} successfully.", speakers, languages
     except Exception as e:
-        return f"Failed to load model: {e}"
+        return f"Failed to load model: {e}", [], []
 
 def unload_model():
     global global_tts_model, global_tts_model_path, global_tts_device
@@ -491,14 +491,14 @@ def unload_model():
         return "Model unloaded and VRAM cleared."
     return "No model was loaded."
 
-def run_inference(model_path, speaker, text, gpu_id, progress=gr.Progress()):
+def run_inference(model_path, speaker, language, text, instruct, gpu_id, progress=gr.Progress()):
     global global_tts_model, global_tts_model_path
     if not model_path:
         return None, "Please select a model checkpoint."
         
     if global_tts_model_path != model_path or global_tts_model is None:
         progress(0.1, desc="Loading Model into VRAM...")
-        load_msg = load_model(model_path, gpu_id)
+        load_msg, _, _ = load_model(model_path, gpu_id)
         if "Failed" in load_msg:
             return None, load_msg
             
@@ -508,6 +508,8 @@ def run_inference(model_path, speaker, text, gpu_id, progress=gr.Progress()):
         wavs, sr = global_tts_model.generate_custom_voice(
             text=text,
             speaker=speaker,
+            language=language,
+            instruct=instruct if instruct else None
         )
         out_path = "webui_output.wav"
         sf.write(out_path, wavs[0], sr)
@@ -518,11 +520,8 @@ def run_inference(model_path, speaker, text, gpu_id, progress=gr.Progress()):
 
 # UI Event Callbacks
 def on_checkpoint_change(ckpt_path):
-    if ckpt_path and "output/" in ckpt_path:
-        dirs = ckpt_path.replace("\\", "/").split("/")
-        if len(dirs) >= 3:
-            return dirs[-2]
-    return "my_speaker"
+    # No longer hardcoding speaker from experiment name
+    return gr.update()
 
 def refresh_checkpoints():
     return gr.update(choices=get_checkpoints())
@@ -659,13 +658,13 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
                     )
                     input_dir = gr.Textbox(
                         label="Raw WAVs Directory", 
-                        value="/workspace/raw-dataset",
+                        value="raw-dataset",
                         info="Folder containing source .wav files",
                         scale=1
                     )
                     ref_audio = gr.Textbox(
                         label="Reference Audio Path", 
-                        value="/workspace/raw-dataset/ref.wav", 
+                        value="raw-dataset/ref.wav", 
                         info="Optional: Resampled to 24k",
                         scale=1
                     )
@@ -760,10 +759,14 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
                     
                     with gr.Row():
                         t_speedup = gr.Checkbox(label="Use Experimental Training Method to Speed Up (Multi-core CPU)", value=False)
+                        t_resume = gr.Dropdown(get_checkpoints(), label="Resume From Checkpoint", value="latest", info="Select 'latest' to auto-resume, 'none' to restart, or a specific folder")
                         
                 with gr.Row():
                     train_btn = gr.Button("🚀 Start Training", variant="primary", elem_classes="gr-button-primary")
                     stop_btn = gr.Button("🛑 Stop Training", variant="stop", elem_classes="gr-button-stop")
+                
+                # Update Start Training inputs
+                train_btn_inputs = [experiment_dropdown, speaker_dropdown, init_model, model_source, t_batch, t_lr, t_epochs, t_grad, gpu_train, t_speedup, t_resume]
                 
                 with gr.Row():
                     with gr.Column(scale=3):
@@ -783,7 +786,13 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
                             ckpt_dropdown = gr.Dropdown(get_checkpoints(), label="Select Checkpoint", value=None, scale=4, info="Select a .pt or .safetensors checkpoint")
                             ckpt_refresh_btn = gr.Button("🔄", scale=1)
                             
-                        test_speaker = gr.Textbox(label="Speaker Name (Auto-filled)", value="my_speaker", info="Target voice ID")
+                        load_model_btn = gr.Button("📥 Load & Query Model", variant="secondary")
+                        
+                        with gr.Row():
+                            test_speaker = gr.Dropdown(label="Speaker Name", choices=[], allow_custom_value=True, info="Target voice ID")
+                            test_language = gr.Dropdown(label="Language", choices=["English", "Chinese", "Japanese", "Korean", "German", "French", "Spanish", "Italian", "Auto"], value="English", allow_custom_value=True)
+                        
+                        test_instruct = gr.Textbox(label="Optional Instruct", placeholder="e.g. Speak faster and with a high pitch", value="")
                         test_text = gr.Textbox(label="Text to Synthesize", value="Hello, this is a test from my custom voice.", lines=4)
                         gpu_infer = gr.Dropdown(gpus_list, label="GPU Device", value=default_gpu, info="Inference device")
                         
@@ -808,18 +817,18 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
     experiment_dropdown.change(
         fn=load_experiment_config, 
         inputs=[experiment_dropdown], 
-        outputs=[preset_dropdown, init_model, t_batch, t_lr, t_epochs, t_grad, speaker_dropdown, t_speedup, train_status]
+        outputs=[preset_dropdown, init_model, t_batch, t_lr, t_epochs, t_grad, speaker_dropdown, t_speedup, t_resume, train_status]
     )
     
-    # Step 1
-    step1_btn.click(fn=run_step_1, inputs=[input_dir, global_speaker_input, ref_audio], outputs=[step1_out])
+    # Update training click handler
+    train_btn.click(fn=start_training, inputs=train_btn_inputs, outputs=[train_status, log_box])
     
     # Step 2
     step2_btn.click(fn=run_step_2, inputs=[global_speaker_input, asr_model, asr_source, gpu_asr], outputs=[step2_out])
 
     
     # Step 3
-    step3_btn.click(fn=run_step_3, inputs=[speaker_dropdown, gpu_prep], outputs=[step3_out])
+    step3_btn.click(fn=run_step_3, inputs=[speaker_dropdown, experiment_dropdown, gpu_prep], outputs=[step3_out])
     
     # Utilities
     download_btn.click(fn=check_or_download_model, inputs=[init_model, model_source], outputs=[download_log])
@@ -859,9 +868,25 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
     
     # Inference
     ckpt_refresh_btn.click(fn=refresh_checkpoints, outputs=[ckpt_dropdown])
-    ckpt_dropdown.change(fn=on_checkpoint_change, inputs=[ckpt_dropdown], outputs=[test_speaker])
+    
+    def on_load_model_click(model_path, gpu_id):
+        if not model_path:
+            return "Please select a checkpoint first.", gr.update(), gr.update()
+        status, speakers, languages = load_model(model_path, gpu_id)
+        return status, gr.update(choices=speakers), gr.update(choices=languages)
+
+    load_model_btn.click(
+        fn=on_load_model_click, 
+        inputs=[ckpt_dropdown, gpu_infer], 
+        outputs=[inference_status, test_speaker, test_language]
+    )
+
     unload_btn.click(fn=unload_model, outputs=[unload_status])
-    test_btn.click(fn=run_inference, inputs=[ckpt_dropdown, test_speaker, test_text, gpu_infer], outputs=[audio_out, inference_status])
+    test_btn.click(
+        fn=run_inference, 
+        inputs=[ckpt_dropdown, test_speaker, test_language, test_text, test_instruct, gpu_infer], 
+        outputs=[audio_out, inference_status]
+    )
 
 if __name__ == "__main__":
     os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0,::1"

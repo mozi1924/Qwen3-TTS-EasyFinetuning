@@ -21,6 +21,7 @@ import gc
 import torch
 
 from qwen_tts import Qwen3TTSTokenizer
+from utils import resolve_path
 
 BATCH_INFER_NUM = 32
 
@@ -52,6 +53,11 @@ def run_prepare(device, tokenizer_model_path, input_jsonl, output_jsonl):
         yield {"type": "progress", "progress": 0.1, "desc": f"Starting tokenization of {total_count} files..."}
         
         for idx, line in enumerate(total_lines):
+            # Convert to absolute paths for tokenization and robust storage
+            line['audio'] = resolve_path(line['audio'])
+            if line.get('ref_audio'):
+                line['ref_audio'] = resolve_path(line['ref_audio'])
+                
             batch_lines.append(line)
             batch_audios.append(line['audio'])
 

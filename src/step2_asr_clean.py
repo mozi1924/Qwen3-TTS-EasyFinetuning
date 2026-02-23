@@ -7,6 +7,8 @@ import gc
 from tqdm import tqdm
 from qwen_asr import Qwen3ASRModel
 
+from utils import get_project_root
+
 def log_progress(progress, desc):
     print(json.dumps({"type": "progress", "progress": progress, "desc": desc}), flush=True)
 
@@ -37,6 +39,7 @@ def run_step_2(input_dir, ref_audio, output_jsonl, model_id="Qwen/Qwen3-ASR-1.7B
         
         yield {"type": "progress", "progress": 0.1, "desc": "Starting transcription..."}
         
+        root_dir = get_project_root()
         for batch_idx, i in enumerate(range(0, len(wav_files), batch_size)):
             progress_pct = 0.1 + 0.85 * (batch_idx / max(total_batches, 1))
             yield {"type": "progress", "progress": progress_pct, "desc": f"Transcribing batch {batch_idx+1}/{total_batches}..."}
@@ -51,9 +54,9 @@ def run_step_2(input_dir, ref_audio, output_jsonl, model_id="Qwen/Qwen3-ASR-1.7B
                     if not cleaned_text: continue
                     
                     final_entries.append({
-                        "audio": os.path.abspath(path),
+                        "audio": os.path.relpath(path, start=root_dir),
                         "text": cleaned_text,
-                        "ref_audio": os.path.abspath(ref_audio) if ref_audio else ""
+                        "ref_audio": os.path.relpath(ref_audio, start=root_dir) if ref_audio else ""
                     })
             except Exception as e:
                 yield {"type": "error", "msg": f"Error transcribing batch {i}: {e}"}

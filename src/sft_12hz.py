@@ -150,12 +150,15 @@ def run_train(
         )
 
         starting_epoch = 0
-        resume_step = None # Initialize resume_step
+        resume_step = None 
+        
         if args.resume_from_checkpoint:
             if args.resume_from_checkpoint.lower() == "latest":
                 if os.path.exists(args.output_model_path):
-                    dirs = [d for d in os.listdir(args.output_model_path) if d.startswith("accelerate-epoch-")]
+                    # Look for directories like checkpoint-epoch-X or accelerate-epoch-X
+                    dirs = [d for d in os.listdir(args.output_model_path) if (d.startswith("checkpoint-epoch-") or d.startswith("accelerate-epoch-"))]
                     if len(dirs) > 0:
+                        # Prioritize checkpoint-epoch as it's the new standard
                         dirs.sort(key=lambda x: int(x.split("-")[-1]))
                         args.resume_from_checkpoint = os.path.join(args.output_model_path, dirs[-1])
                     else:
@@ -164,15 +167,27 @@ def run_train(
                     args.resume_from_checkpoint = None
 
             if args.resume_from_checkpoint is not None and os.path.exists(args.resume_from_checkpoint):
-                accelerator.print(f"Resumed from checkpoint: {args.resume_from_checkpoint}")
-                accelerator.load_state(args.resume_from_checkpoint)
+                # Determine where the actual accelerate state is
+                accel_path = args.resume_from_checkpoint
+                if os.path.exists(os.path.join(args.resume_from_checkpoint, "accelerate_state")):
+                    accel_path = os.path.join(args.resume_from_checkpoint, "accelerate_state")
+                
+                accelerator.print(f"Resumed from state: {accel_path}")
+                accelerator.load_state(accel_path)
+                
                 try:
-                    starting_epoch = int(args.resume_from_checkpoint.split("-")[-1]) + 1
-                except:
-                    pass
+                    # Folder names are expected to end in -{epoch}
+                    starting_epoch = int(args.resume_from_checkpoint.rstrip("/").split("-")[-1]) + 1
+                    accelerator.print(f"Starting from epoch: {starting_epoch}")
+                except Exception as e:
+                    accelerator.print(f"Could not parse epoch from {args.resume_from_checkpoint}: {e}")
 
         global_step = starting_epoch * len(train_dataloader)
-        yield format_train_progress(0, "Starting Training...", 0.0)
+        accelerator.print(f"Dataset size: {len(dataset)}")
+        accelerator.print(f"Dataloader length: {len(train_dataloader)}")
+        accelerator.print(f"Global step starts at: {global_step}")
+        
+        yield format_train_progress(starting_epoch, "Starting Training...", 0.0)
 
         for epoch in range(starting_epoch, args.num_epochs):
             model.train()
@@ -268,16 +283,20 @@ def run_train(
                         except Exception as e:
                             accelerator.print(f"Error logging Mel to Tensorboard: {e}")
 
-            # Save accelerator state for resuming
+            # Save unified checkpoint
             accelerator.wait_for_everyone()
             if accelerator.is_main_process:
                 yield format_train_progress(epoch, "Saving Checkpoint", 0.0)
-                accel_state_dir = os.path.join(args.output_model_path, f"accelerate-epoch-{epoch}")
+                
+                output_dir = os.path.join(args.output_model_path, f"checkpoint-epoch-{epoch}")
+                os.makedirs(output_dir, exist_ok=True)
+                
+                # 1. Save accelerator state (optimizer, etc.) into a subfolder
+                accel_state_dir = os.path.join(output_dir, "accelerate_state")
                 os.makedirs(accel_state_dir, exist_ok=True)
                 accelerator.save_state(accel_state_dir)
-
-            if accelerator.is_main_process:
-                output_dir = os.path.join(args.output_model_path, f"checkpoint-epoch-{epoch}")
+                
+                # 2. Copy base model files (configs, processor)
                 shutil.copytree(MODEL_PATH, output_dir, dirs_exist_ok=True)
 
                 input_config_file = os.path.join(MODEL_PATH, "config.json")
@@ -313,6 +332,19 @@ def run_train(
                 state_dict['talker.model.codec_embedding.weight'][3000] = target_speaker_embedding[0].detach().to(weight.device).to(weight.dtype)
                 save_path = os.path.join(output_dir, "model.safetensors")
                 save_file(state_dict, save_path)
+                
+                # 4. Optional: Clean up old accelerate states to save space
+                # We keep the main folder but delete the large 'accelerate_state' subfolder from old epochs
+                if epoch > 0:
+                    prev_accel_dir = os.path.join(args.output_model_path, f"checkpoint-epoch-{epoch-1}", "accelerate_state")
+                    if os.path.exists(prev_accel_dir):
+                        accelerator.print(f"Cleaning up old accelerator state: {prev_accel_dir}")
+                        shutil.rmtree(prev_accel_dir)
+                    
+                    # Also clean up legacy separate accelerate folders if they exist
+                    legacy_accel_dir = os.path.join(args.output_model_path, f"accelerate-epoch-{epoch-1}")
+                    if os.path.exists(legacy_accel_dir):
+                        shutil.rmtree(legacy_accel_dir)
 
         accelerator.end_training()
         yield {"type": "progress", "progress": 1.0, "desc": "Training completed."}

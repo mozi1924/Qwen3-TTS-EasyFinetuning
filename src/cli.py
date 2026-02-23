@@ -11,45 +11,16 @@ Usage:
     python cli.py infer   --checkpoint output/exp1/checkpoint-epoch-1 --text "Hello world"
 """
 
-import argparse
-import json
 import os
 import sys
 import time
+from utils import get_model_path, get_project_root, resolve_path
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # ─────────────────── Utilities ──────────────────────────
 
-def get_model_path(model_id, use_hf=False):
-    """Resolve a model ID to a local path, downloading if necessary."""
-    model_name = model_id.split("/")[-1]
-
-    candidates = [
-        os.path.join("/workspace/models", model_id),
-        os.path.join("/workspace/models", model_name),
-        os.path.join("/workspace/models", model_id.replace(".", "___")),
-        os.path.join("/workspace/models", model_id.split("/")[0], model_name.replace(".", "___")),
-    ]
-
-    for path in candidates:
-        if os.path.exists(path) and any(
-            os.path.isfile(os.path.join(path, f))
-            for f in ["config.json", "model.safetensors", "pytorch_model.bin"]
-        ):
-            print(f"  ✅ Found local model: {path}")
-            return path
-
-    local_path = os.path.join("/workspace/models", model_id)
-
-    if use_hf:
-        print(f"  ⬇️ Downloading {model_id} from HuggingFace...")
-        from huggingface_hub import snapshot_download
-        return snapshot_download(model_id, local_dir=local_path, local_dir_use_symlinks=False)
-    else:
-        print(f"  ⬇️ Downloading {model_id} from ModelScope...")
-        from modelscope import snapshot_download
-        return snapshot_download(model_id, cache_dir="/workspace/models")
+# Removed local get_model_path as it's now imported from utils
 
 
 def print_header(text):
@@ -113,11 +84,11 @@ def cmd_split(args):
     print_step("Step 1: Audio Split & Resample")
     from step1_audio_split import run_step_1
     
-    speaker_dir = os.path.abspath(os.path.join("final-dataset", args.speaker_name))
+    speaker_dir = resolve_path(os.path.join("final-dataset", args.speaker_name))
     audio_24k_dir = os.path.join(speaker_dir, "audio_24k")
-    ref_audio = args.ref_audio if args.ref_audio else None
+    ref_audio = resolve_path(args.ref_audio) if args.ref_audio else None
     
-    consume_generator(run_step_1(args.input_dir, audio_24k_dir, ref_audio))
+    consume_generator(run_step_1(resolve_path(args.input_dir), audio_24k_dir, ref_audio))
 
 
 def cmd_asr(args):
@@ -125,7 +96,7 @@ def cmd_asr(args):
     print_step("Step 2: ASR Transcription & Cleaning")
     from step2_asr_clean import run_step_2
     
-    speaker_dir = os.path.abspath(os.path.join("final-dataset", args.speaker_name))
+    speaker_dir = resolve_path(os.path.join("final-dataset", args.speaker_name))
     audio_24k_dir = os.path.join(speaker_dir, "audio_24k")
     output_jsonl = os.path.join(speaker_dir, "tts_train.jsonl")
     
@@ -144,9 +115,13 @@ def cmd_tokenize(args):
     print_step("Step 3: Data Tokenization")
     from prepare_data import run_prepare
     
-    speaker_dir = os.path.abspath(os.path.join("final-dataset", args.speaker_name))
+    speaker_dir = resolve_path(os.path.join("final-dataset", args.speaker_name))
     input_jsonl = os.path.join(speaker_dir, "tts_train.jsonl")
-    output_codes_jsonl = os.path.join(speaker_dir, "tts_train_with_codes.jsonl")
+    
+    # Save to logs/experiment_name/
+    log_dir = resolve_path(os.path.join("logs", args.experiment_name))
+    os.makedirs(log_dir, exist_ok=True)
+    output_codes_jsonl = os.path.join(log_dir, "tts_train_with_codes.jsonl")
     
     resolved_tokenizer = get_model_path("Qwen/Qwen3-TTS-Tokenizer-12Hz", use_hf=False)
     device = "cuda:0" if args.gpu != "cpu" else "cpu"
@@ -168,13 +143,13 @@ def cmd_train(args):
     print(f"  Epochs       : {args.epochs}")
     print(f"  Grad Accum   : {args.grad_acc}")
 
-    train_jsonl = os.path.abspath(os.path.join("final-dataset", args.speaker_name, "tts_train_with_codes.jsonl"))
+    train_jsonl = resolve_path(os.path.join("logs", args.experiment_name, "tts_train_with_codes.jsonl"))
     if not os.path.exists(train_jsonl):
         print(f"\n  ❌ Training data not found: {train_jsonl}")
         print("  Please run `python cli.py prepare` first.")
         sys.exit(1)
 
-    output_dir = os.path.abspath(os.path.join("output", args.experiment_name))
+    output_dir = resolve_path(os.path.join("output", args.experiment_name))
     os.makedirs(output_dir, exist_ok=True)
 
     # Save config
@@ -235,17 +210,21 @@ def cmd_infer(args):
     print_header("🔊 Qwen3-TTS Inference")
     print(f"  Checkpoint   : {args.checkpoint}")
     print(f"  Speaker      : {args.speaker}")
+    print(f"  Language     : {args.language}")
+    print(f"  Instruct     : {args.instruct}")
     print(f"  GPU Device   : {args.gpu}")
     print(f"  Output File  : {args.output}")
     print(f"  Text         : {args.text[:80]}{'...' if len(args.text) > 80 else ''}")
 
-    if not os.path.exists(args.checkpoint):
-        # Try resolving via get_model_path
-        resolved = get_model_path(args.checkpoint, use_hf=False)
-        if not os.path.exists(resolved):
+    checkpoint_path = resolve_path(args.checkpoint)
+    if not os.path.exists(checkpoint_path):
+        # Try resolving via get_model_path if not a direct file path
+        checkpoint_path = get_model_path(args.checkpoint, use_hf=False)
+        if not os.path.exists(checkpoint_path):
             print(f"\n  ❌ Checkpoint not found: {args.checkpoint}")
             sys.exit(1)
-        args.checkpoint = resolved
+    
+    args.checkpoint = checkpoint_path
 
     print_step("Loading model...")
     start = time.time()
@@ -266,12 +245,61 @@ def cmd_infer(args):
     wavs, sr = tts.generate_custom_voice(
         text=args.text,
         speaker=args.speaker,
+        language=args.language,
+        instruct=args.instruct
     )
     print(f"    Generation completed in {time.time() - start:.2f}s")
 
     sf.write(args.output, wavs[0], sr)
     print_header("✅ Inference Complete!")
     print(f"  Saved to: {args.output}")
+
+
+def cmd_query(args):
+    """Query supported speakers and languages for a model."""
+    import torch
+    print_header("🔍 Qwen3-TTS Model Query")
+    print(f"  Checkpoint   : {args.checkpoint}")
+    print(f"  GPU Device   : {args.gpu}")
+
+    if not os.path.exists(args.checkpoint):
+        resolved = get_model_path(args.checkpoint, use_hf=False)
+        if not os.path.exists(resolved):
+            print(f"\n  ❌ Checkpoint not found: {args.checkpoint}")
+            sys.exit(1)
+        args.checkpoint = resolved
+
+    print_step("Loading model...")
+    from qwen_tts import Qwen3TTSModel
+    tts = Qwen3TTSModel.from_pretrained(
+        args.checkpoint,
+        device_map=args.gpu,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2" if "cuda" in args.gpu else None,
+    )
+
+    print_step("Querying capabilities...")
+    speakers = []
+    languages = []
+    if hasattr(tts, 'get_supported_speakers'):
+        speakers = tts.get_supported_speakers()
+    if hasattr(tts, 'get_supported_languages'):
+        languages = tts.get_supported_languages()
+
+    print(f"\n  🔊 Supported Speakers ({len(speakers)}):")
+    if speakers:
+        for s in speakers:
+            print(f"    - {s}")
+    else:
+        print("    (None or standard model)")
+
+    print(f"\n  🌐 Supported Languages ({len(languages)}):")
+    if languages:
+        for l in languages:
+            print(f"    - {l}")
+    else:
+        print("    (None or default)")
+    print()
 
 
 # ─────────────────── Main Entry ─────────────────────────
@@ -294,6 +322,7 @@ Examples:
     p_prepare = subparsers.add_parser("prepare", help="Run full data preparation pipeline (Steps 1-3)")
     p_prepare.add_argument("--input_dir", type=str, required=True, help="Directory containing raw .wav files")
     p_prepare.add_argument("--speaker_name", type=str, required=True, help="Unique speaker/dataset name")
+    p_prepare.add_argument("--experiment_name", type=str, required=True, help="Experiment name for logs")
     p_prepare.add_argument("--ref_audio", type=str, default=None, help="Path to reference audio file (optional)")
     p_prepare.add_argument("--asr_model", type=str, default="Qwen/Qwen3-ASR-1.7B", help="ASR model ID")
     p_prepare.add_argument("--batch_size", type=int, default=16, help="ASR batch size")
@@ -317,6 +346,7 @@ Examples:
     # ── tokenize (Step 3) ──
     p_tokenize = subparsers.add_parser("tokenize", help="Step 3: Data Tokenization")
     p_tokenize.add_argument("--speaker_name", type=str, required=True)
+    p_tokenize.add_argument("--experiment_name", type=str, required=True, help="Experiment name for saving logs/codes")
     p_tokenize.add_argument("--gpu", type=str, default="cuda:0")
 
     # ── train ──
@@ -335,9 +365,16 @@ Examples:
     p_infer = subparsers.add_parser("infer", help="Run inference on a trained checkpoint")
     p_infer.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint directory")
     p_infer.add_argument("--speaker", type=str, default="my_speaker", help="Speaker name used in training")
+    p_infer.add_argument("--language", type=str, default="English", help="Language for synthesis")
+    p_infer.add_argument("--instruct", type=str, default=None, help="Optional instruct for synthesis")
     p_infer.add_argument("--text", type=str, required=True, help="Text to synthesize")
     p_infer.add_argument("--output", type=str, default="output.wav", help="Output audio file path")
     p_infer.add_argument("--gpu", type=str, default="cuda:0", help="GPU device")
+
+    # ── query ──
+    p_query = subparsers.add_parser("query", help="Query supported speakers and languages")
+    p_query.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
+    p_query.add_argument("--gpu", type=str, default="cuda:0", help="GPU device")
 
     args = parser.parse_args()
 
@@ -357,6 +394,8 @@ Examples:
         cmd_train(args)
     elif args.command == "infer":
         cmd_infer(args)
+    elif args.command == "query":
+        cmd_query(args)
 
 
 if __name__ == "__main__":
