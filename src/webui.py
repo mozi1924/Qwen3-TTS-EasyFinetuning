@@ -301,7 +301,7 @@ def start_training(experiment_name, speaker_name, init_model, model_source, batc
         "epochs": epochs,
         "grad_acc": grad_acc,
         "use_experimental_speedup": use_experimental_speedup,
-        "resume_from_checkpoint": resume_from_checkpoint
+        "resume_from_checkpoint": str(resume_from_checkpoint) if resume_from_checkpoint else None
     }
     with open(config_path, "w") as f:
         json.dump(config_data, f, indent=4)
@@ -840,11 +840,6 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
     init_model.change(fn=auto_preset, inputs=[init_model], outputs=[preset_dropdown])
     
     # Training
-    train_btn.click(
-        fn=start_training, 
-        inputs=[experiment_dropdown, speaker_dropdown, init_model, model_source, t_batch, t_lr, t_epochs, t_grad, gpu_train, t_speedup], 
-        outputs=[train_status, log_box]
-    )
     stop_btn.click(fn=stop_training, outputs=[train_status])
 
     # Tensorboard Handlers
