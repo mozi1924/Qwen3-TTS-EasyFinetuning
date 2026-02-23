@@ -30,6 +30,7 @@ def run_step_2(input_dir, ref_audio, output_jsonl, model_id="Qwen/Qwen3-ASR-1.7B
         asr_model = Qwen3ASRModel.from_pretrained(model_id, **kwargs)
         
         wav_files = sorted(glob.glob(os.path.join(input_dir, "*.wav")))
+        wav_files = [f for f in wav_files if os.path.basename(f) not in ["ref.wav", "ref_24k.wav"]]
         if not wav_files:
             yield {"type": "error", "msg": f"No .wav files found in {input_dir}"}
             return

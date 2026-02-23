@@ -87,6 +87,7 @@ def run_step_1(input_dir, output_dir, ref_audio=None):
             yield {"type": "progress", "progress": 0.05, "desc": f"Reference audio saved to {ref_24k_path}"}
 
         wav_files = sorted(glob.glob(os.path.join(input_dir, "*.wav")))
+        wav_files = [f for f in wav_files if os.path.basename(f) not in ["ref.wav", "ref_24k.wav"]]
         if not wav_files:
             yield {"type": "error", "msg": f"No .wav files found in {input_dir}"}
             return

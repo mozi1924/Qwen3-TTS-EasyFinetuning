@@ -39,3 +39,4 @@ env/
 build/
 dist/
 *.egg-info/
+build_info.json
