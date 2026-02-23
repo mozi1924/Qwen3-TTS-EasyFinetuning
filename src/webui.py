@@ -526,12 +526,13 @@ def on_new_experiment(name):
         # Exists
         res = list(load_experiment_config(name))
         res[-2] = f"Experiment '{name}' already exists. Switched to it and loaded configuration."
-        return [gr.update(choices=get_experiments(), value=name)] + res
+        return [gr.update(choices=get_experiments(), value=name), gr.update(value="")] + res
         
     try:
         os.makedirs(output_dir, exist_ok=True)
         return [
             gr.update(choices=get_experiments(), value=name), # experiment_dropdown
+            gr.update(value=""), # new_exp_name (clear it)
             "0.6B Model", # preset
             "Qwen/Qwen3-TTS-12Hz-0.6B-Base", # init_model
             2, # batch
@@ -844,13 +845,14 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
                 gr.Markdown("### Step 0: Model Selection & Environment")
                 with gr.Row():
                     with gr.Column(scale=2):
-                        experiment_dropdown = gr.Dropdown(get_experiments(), label="Experiment Name", allow_custom_value=True, info="Select existing or type a new one")
+                        experiment_dropdown = gr.Dropdown(get_experiments(), label="Experiment Name", allow_custom_value=True, info="Select existing, or type below to create")
                         with gr.Row():
-                            exp_refresh_btn = gr.Button("🔄 Refresh", size="sm")
-                            exp_new_btn = gr.Button("➕ New", size="sm", variant="secondary")
+                            new_exp_name = gr.Textbox(show_label=False, placeholder="New Experiment Name...", scale=2)
+                            exp_new_btn = gr.Button("➕ New", variant="secondary", scale=1)
+                        exp_refresh_btn = gr.Button("🔄 Refresh")
                     with gr.Column(scale=2):
                         speaker_dropdown = gr.Dropdown(get_datasets(), label="Select Target Speaker Data", allow_custom_value=True, multiselect=True, info="Select one or more speakers for multi-speaker training")
-                        spk_refresh_btn = gr.Button("🔄 Refresh Speakers", size="sm")
+                        spk_refresh_btn = gr.Button("🔄 Refresh Speakers")
                 
                 with gr.Row():
                     with gr.Column():    
@@ -950,8 +952,8 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
     exp_refresh_btn.click(fn=refresh_exps, outputs=[experiment_dropdown])
     
     # New Experiment Handler
-    new_exp_outputs = [experiment_dropdown, preset_dropdown, init_model, t_batch, t_lr, t_epochs, t_grad, speaker_dropdown, t_speedup, t_resume, train_status, t_resume]
-    exp_new_btn.click(fn=on_new_experiment, inputs=[experiment_dropdown], outputs=new_exp_outputs)
+    new_exp_outputs = [experiment_dropdown, new_exp_name, preset_dropdown, init_model, t_batch, t_lr, t_epochs, t_grad, speaker_dropdown, t_speedup, t_resume, train_status, t_resume]
+    exp_new_btn.click(fn=on_new_experiment, inputs=[new_exp_name], outputs=new_exp_outputs)
     
     spk_refresh_btn.click(fn=refresh_datasets, outputs=[speaker_dropdown])
     
