@@ -202,7 +202,8 @@ def run_train(
                 
                 try:
                     # Folder names are expected to end in -{epoch}
-                    starting_epoch = int(args.resume_from_checkpoint.rstrip("/").split("-")[-1]) + 1
+                    # Use os.path.basename to correctly handle paths with different separators
+                    starting_epoch = int(os.path.basename(args.resume_from_checkpoint.rstrip("/\\")).split("-")[-1]) + 1
                     accelerator.print(f"Starting from epoch: {starting_epoch}")
                 except Exception as e:
                     accelerator.print(f"Could not parse epoch from {args.resume_from_checkpoint}: {e}")
