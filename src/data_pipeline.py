@@ -7,6 +7,10 @@ from pydub import AudioSegment, silence
 from tqdm import tqdm
 from qwen_asr import Qwen3ASRModel
 
+EDGE_SILENCE_MS = 200
+FADE_MS = 40
+SILENCE_SCAN_STEP_MS = 10
+
 def resample_audio(src_path, dest_path, target_sr=24000):
     if not os.path.exists(src_path):
         return False
@@ -19,6 +23,38 @@ def resample_audio(src_path, dest_path, target_sr=24000):
     except Exception as e:
         print(f"Error converting audio {src_path}: {e}")
         return False
+
+def detect_leading_silence_ms(audio, silence_thresh, chunk_size=SILENCE_SCAN_STEP_MS):
+    trim_ms = 0
+    while trim_ms < len(audio):
+        if audio[trim_ms:trim_ms + chunk_size].dBFS > silence_thresh:
+            break
+        trim_ms += chunk_size
+    return min(trim_ms, len(audio))
+
+def strip_edge_silence(audio, silence_thresh):
+    if len(audio) == 0:
+        return audio
+
+    leading_ms = detect_leading_silence_ms(audio, silence_thresh)
+    trailing_ms = detect_leading_silence_ms(audio.reverse(), silence_thresh)
+    end_ms = len(audio) - trailing_ms
+    if end_ms <= leading_ms:
+        return audio
+    return audio[leading_ms:end_ms]
+
+def center_and_smooth_segment(audio, silence_thresh, pad_silence_ms=EDGE_SILENCE_MS, fade_in_ms=0, fade_out_ms=0):
+    trimmed = strip_edge_silence(audio, silence_thresh)
+    if len(trimmed) == 0:
+        trimmed = audio
+
+    if fade_in_ms > 0:
+        trimmed = trimmed.fade_in(min(fade_in_ms, len(trimmed)))
+    if fade_out_ms > 0:
+        trimmed = trimmed.fade_out(min(fade_out_ms, len(trimmed)))
+
+    edge_silence = AudioSegment.silent(duration=pad_silence_ms, frame_rate=trimmed.frame_rate)
+    return edge_silence + trimmed + edge_silence
 
 def split_audio(audio_path, output_dir_base, filename_prefix, max_duration_ms=15000, min_duration_ms=1000):
     try:
@@ -51,10 +87,18 @@ def split_audio(audio_path, output_dir_base, filename_prefix, max_duration_ms=15
             
         # Hard cut segments that are still too long
         if len(chunk) > max_duration_ms:
-            for j in range(0, len(chunk), max_duration_ms):
+            cut_points = list(range(0, len(chunk), max_duration_ms))
+            for cut_idx, j in enumerate(cut_points):
                 sub_chunk = chunk[j:j+max_duration_ms]
                 if len(sub_chunk) < min_duration_ms:
                     continue
+
+                sub_chunk = center_and_smooth_segment(
+                    sub_chunk,
+                    silence_thresh=thresh,
+                    fade_in_ms=FADE_MS if cut_idx > 0 else 0,
+                    fade_out_ms=FADE_MS if cut_idx < len(cut_points) - 1 else 0,
+                )
                 
                 out_name = f"{filename_prefix}_seg{i:03d}_cut{j:03d}.wav"
                 out_path = os.path.join(output_dir_base, out_name)
@@ -62,6 +106,7 @@ def split_audio(audio_path, output_dir_base, filename_prefix, max_duration_ms=15
                     sub_chunk.export(out_path, format="wav")
                 segment_paths.append(out_path)
         else:
+            chunk = center_and_smooth_segment(chunk, silence_thresh=thresh)
             out_name = f"{filename_prefix}_seg{i:03d}.wav"
             out_path = os.path.join(output_dir_base, out_name)
             if not os.path.exists(out_path):
@@ -143,4 +188,3 @@ def run_pipeline(input_dir, ref_audio, output_dir, model_id="Qwen/Qwen3-ASR-1.7B
             
     if progress: progress(1.0, desc="Pipeline Completed!")
     return True, f"Successfully processed {len(final_entries)} segments. Saved to {final_jsonl}"
-
