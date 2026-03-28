@@ -65,6 +65,14 @@ def center_and_smooth_segment(audio, silence_thresh, pad_silence_ms=EDGE_SILENCE
     edge_silence = AudioSegment.silent(duration=pad_silence_ms, frame_rate=trimmed.frame_rate)
     return edge_silence + trimmed + edge_silence
 
+def smooth_hard_cut_segment(audio, fade_in_ms=0, fade_out_ms=0):
+    smoothed = audio
+    if fade_in_ms > 0:
+        smoothed = smoothed.fade_in(min(fade_in_ms, len(smoothed)))
+    if fade_out_ms > 0:
+        smoothed = smoothed.fade_out(min(fade_out_ms, len(smoothed)))
+    return smoothed
+
 def split_audio(audio_path, output_dir_base, filename_prefix, max_duration_ms=15000, min_duration_ms=1000, target_sr=24000):
     try:
         audio = AudioSegment.from_file(audio_path)
@@ -99,9 +107,8 @@ def split_audio(audio_path, output_dir_base, filename_prefix, max_duration_ms=15
                 if len(sub_chunk) < min_duration_ms:
                     continue
 
-                sub_chunk = center_and_smooth_segment(
+                sub_chunk = smooth_hard_cut_segment(
                     sub_chunk,
-                    silence_thresh=thresh,
                     fade_in_ms=FADE_MS if cut_idx > 0 else 0,
                     fade_out_ms=FADE_MS if cut_idx < len(cut_points) - 1 else 0,
                 )
@@ -121,7 +128,7 @@ def split_audio(audio_path, output_dir_base, filename_prefix, max_duration_ms=15
             
     return segment_paths
 
-def run_step_1(input_dir, output_dir, ref_audio=None, num_threads=6):
+def run_step_1(input_dir, output_dir, ref_audio=None, num_threads=6, skip_split=False):
     try:
         os.makedirs(output_dir, exist_ok=True)
         
@@ -140,19 +147,35 @@ def run_step_1(input_dir, output_dir, ref_audio=None, num_threads=6):
             return
             
         all_segments = []
-        yield {"type": "progress", "progress": 0.1, "desc": f"Splitting and resampling {len(wav_files)} files using {num_threads} threads..."}
+        action_desc = "Resampling" if skip_split else "Splitting and resampling"
+        yield {"type": "progress", "progress": 0.1, "desc": f"{action_desc} {len(wav_files)} files using {num_threads} threads..."}
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = {
-                executor.submit(split_audio, wav_path, output_dir, os.path.splitext(os.path.basename(wav_path))[0]): wav_path
-                for wav_path in wav_files
-            }
+            if skip_split:
+                futures = {
+                    executor.submit(
+                        resample_audio,
+                        wav_path,
+                        os.path.join(output_dir, os.path.basename(wav_path)),
+                    ): wav_path
+                    for wav_path in wav_files
+                }
+            else:
+                futures = {
+                    executor.submit(split_audio, wav_path, output_dir, os.path.splitext(os.path.basename(wav_path))[0]): wav_path
+                    for wav_path in wav_files
+                }
             
             for idx, future in enumerate(concurrent.futures.as_completed(futures)):
                 yield {"type": "progress", "progress": 0.1 + 0.8 * (idx / max(1, len(wav_files))), "desc": f"Processing {idx+1}/{len(wav_files)}"}
                 try:
-                    segs = future.result()
-                    all_segments.extend([os.path.abspath(s) for s in segs])
+                    result = future.result()
+                    src_path = futures[future]
+                    if skip_split:
+                        if result:
+                            all_segments.append(os.path.abspath(os.path.join(output_dir, os.path.basename(src_path))))
+                    else:
+                        all_segments.extend([os.path.abspath(s) for s in result])
                 except Exception as e:
                     yield {"type": "error", "msg": f"Error in processing: {str(e)}"}
             
@@ -160,4 +183,3 @@ def run_step_1(input_dir, output_dir, ref_audio=None, num_threads=6):
         
     except Exception as e:
         yield {"type": "error", "msg": f"Unhandled exception in step 1: {str(e)}"}
-

@@ -56,6 +56,14 @@ def center_and_smooth_segment(audio, silence_thresh, pad_silence_ms=EDGE_SILENCE
     edge_silence = AudioSegment.silent(duration=pad_silence_ms, frame_rate=trimmed.frame_rate)
     return edge_silence + trimmed + edge_silence
 
+def smooth_hard_cut_segment(audio, fade_in_ms=0, fade_out_ms=0):
+    smoothed = audio
+    if fade_in_ms > 0:
+        smoothed = smoothed.fade_in(min(fade_in_ms, len(smoothed)))
+    if fade_out_ms > 0:
+        smoothed = smoothed.fade_out(min(fade_out_ms, len(smoothed)))
+    return smoothed
+
 def split_audio(audio_path, output_dir_base, filename_prefix, max_duration_ms=15000, min_duration_ms=1000):
     try:
         audio = AudioSegment.from_file(audio_path)
@@ -93,9 +101,8 @@ def split_audio(audio_path, output_dir_base, filename_prefix, max_duration_ms=15
                 if len(sub_chunk) < min_duration_ms:
                     continue
 
-                sub_chunk = center_and_smooth_segment(
+                sub_chunk = smooth_hard_cut_segment(
                     sub_chunk,
-                    silence_thresh=thresh,
                     fade_in_ms=FADE_MS if cut_idx > 0 else 0,
                     fade_out_ms=FADE_MS if cut_idx < len(cut_points) - 1 else 0,
                 )
@@ -115,7 +122,7 @@ def split_audio(audio_path, output_dir_base, filename_prefix, max_duration_ms=15
             
     return segment_paths
 
-def run_pipeline(input_dir, ref_audio, output_dir, model_id="Qwen/Qwen3-ASR-1.7B", batch_size=16, progress=None, speaker_id=None):
+def run_pipeline(input_dir, ref_audio, output_dir, model_id="Qwen/Qwen3-ASR-1.7B", batch_size=16, progress=None, speaker_id=None, skip_split=False):
     audio_out_dir = os.path.join(output_dir, "audio")
     audio_24k_dir = os.path.join(output_dir, "audio_24k")
     os.makedirs(audio_out_dir, exist_ok=True)
@@ -142,13 +149,18 @@ def run_pipeline(input_dir, ref_audio, output_dir, model_id="Qwen/Qwen3-ASR-1.7B
     wav_files = sorted(glob.glob(os.path.join(input_dir, "*.wav")))
     all_segments = []
     
-    if progress: progress(0.3, desc="Splitting audio files...")
-    print("Splitting audio files...")
+    if progress: progress(0.3, desc="Resampling audio files..." if skip_split else "Splitting audio files...")
+    print("Resampling audio files..." if skip_split else "Splitting audio files...")
     for idx, wav_path in enumerate(tqdm(wav_files, desc="Splitting")):
-        if progress: progress(0.3 + 0.2 * (idx / len(wav_files)), desc=f"Splitting {idx+1}/{len(wav_files)}")
-        prefix = os.path.splitext(os.path.basename(wav_path))[0]
-        segs = split_audio(wav_path, audio_out_dir, prefix)
-        all_segments.extend([os.path.abspath(s) for s in segs])
+        if progress: progress(0.3 + 0.2 * (idx / len(wav_files)), desc=f"Processing {idx+1}/{len(wav_files)}")
+        if skip_split:
+            dest_audio = os.path.join(audio_out_dir, os.path.basename(wav_path))
+            if resample_audio(wav_path, dest_audio):
+                all_segments.append(os.path.abspath(dest_audio))
+        else:
+            prefix = os.path.splitext(os.path.basename(wav_path))[0]
+            segs = split_audio(wav_path, audio_out_dir, prefix)
+            all_segments.extend([os.path.abspath(s) for s in segs])
     
     final_entries = []
     if progress: progress(0.5, desc="Transcribing and processing data...")

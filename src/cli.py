@@ -16,7 +16,7 @@ import sys
 import json
 import time
 import argparse
-from utils import get_model_path, get_project_root, resolve_path
+from utils import get_model_path, get_project_root, resolve_path, resolve_speaker_choice
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -90,7 +90,15 @@ def cmd_split(args):
     audio_24k_dir = os.path.join(speaker_dir, "audio_24k")
     ref_audio = resolve_path(args.ref_audio) if args.ref_audio else None
     
-    consume_generator(run_step_1(resolve_path(args.input_dir), audio_24k_dir, ref_audio, num_threads=args.threads))
+    consume_generator(
+        run_step_1(
+            resolve_path(args.input_dir),
+            audio_24k_dir,
+            ref_audio,
+            num_threads=args.threads,
+            skip_split=args.skip_split,
+        )
+    )
 
 
 def cmd_asr(args):
@@ -178,6 +186,10 @@ def cmd_train(args):
     print(f"  Learning Rate: {args.lr}")
     print(f"  Epochs       : {args.epochs}")
     print(f"  Grad Accum   : {args.grad_acc}")
+    print(f"  Save Strategy: {args.save_strategy}")
+    print(f"  Save Steps   : {args.save_steps}")
+    print(f"  Keep Ckpt    : {args.keep_last_n_checkpoints}")
+    print(f"  Accelerator  : {args.use_accelerator}")
 
     train_jsonl = resolve_path(os.path.join("logs", args.experiment_name, "tts_train_with_codes.jsonl"))
     if not os.path.exists(train_jsonl):
@@ -198,6 +210,10 @@ def cmd_train(args):
         "lr": args.lr,
         "epochs": args.epochs,
         "grad_acc": args.grad_acc,
+        "save_strategy": args.save_strategy,
+        "save_steps": args.save_steps,
+        "keep_last_n_checkpoints": args.keep_last_n_checkpoints,
+        "use_accelerator": args.use_accelerator,
     }
     with open(config_path, "w") as f:
         json.dump(config_data, f, indent=4)
@@ -231,6 +247,10 @@ def cmd_train(args):
             num_epochs=args.epochs,
             gradient_accumulation_steps=args.grad_acc,
             resume_from_checkpoint="latest",
+            save_strategy=args.save_strategy,
+            save_steps=args.save_steps,
+            keep_last_n_checkpoints=args.keep_last_n_checkpoints,
+            use_accelerator=args.use_accelerator,
         )
     )
 
@@ -278,12 +298,16 @@ def cmd_infer(args):
     print_step("Synthesizing audio...")
     start = time.time()
 
+    supported_speakers = tts.get_supported_speakers() if hasattr(tts, 'get_supported_speakers') else []
+    resolved_speaker = resolve_speaker_choice(args.speaker, supported_speakers)
     wavs, sr = tts.generate_custom_voice(
         text=args.text,
-        speaker=args.speaker,
+        speaker=resolved_speaker,
         language=args.language,
         instruct=args.instruct
     )
+    if resolved_speaker != args.speaker:
+        print(f"    Speaker normalized: {args.speaker} -> {resolved_speaker}")
     print(f"    Generation completed in {time.time() - start:.2f}s")
 
     sf.write(args.output, wavs[0], sr)
@@ -375,6 +399,7 @@ Examples:
     p_prepare.add_argument("--model_source", type=str, choices=["HuggingFace", "ModelScope"], default="HuggingFace", help="Model download source")
     p_prepare.add_argument("--gpu", type=str, default="cuda:0", help="GPU device (e.g., cuda:0, cpu)")
     p_prepare.add_argument("--threads", type=int, default=6, help="Number of threads for audio split")
+    p_prepare.add_argument("--skip_split", action="store_true", help="Skip segmentation and only resample each input wav to 24k")
 
     # ── split (Step 1) ──
     p_split = subparsers.add_parser("split", help="Step 1: Audio Split & Resample")
@@ -382,6 +407,7 @@ Examples:
     p_split.add_argument("--speaker_name", type=str, required=True)
     p_split.add_argument("--ref_audio", type=str, default=None)
     p_split.add_argument("--threads", type=int, default=6, help="Number of threads for audio split")
+    p_split.add_argument("--skip_split", action="store_true", help="Skip segmentation and only resample each input wav to 24k")
 
     # ── asr (Step 2) ──
     p_asr = subparsers.add_parser("asr", help="Step 2: ASR Transcription & Cleaning")
@@ -408,6 +434,10 @@ Examples:
     p_train.add_argument("--epochs", type=int, default=2, help="Number of training epochs")
     p_train.add_argument("--grad_acc", type=int, default=4, help="Gradient accumulation steps")
     p_train.add_argument("--gpu", type=str, default="cuda:0", help="GPU device")
+    p_train.add_argument("--save_strategy", type=str, choices=["step", "epoch", "both"], default="both", help="Checkpoint save strategy")
+    p_train.add_argument("--save_steps", type=int, default=200, help="Save step checkpoint every N global steps")
+    p_train.add_argument("--keep_last_n_checkpoints", type=int, default=3, help="Keep last N checkpoints per save type")
+    p_train.add_argument("--use_accelerator", action="store_true", default=False, help="Use accelerate when available")
 
     # ── infer ──
     p_infer = subparsers.add_parser("infer", help="Run inference on a trained checkpoint")
