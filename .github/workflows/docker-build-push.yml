@@ -1,25 +1,39 @@
-name: Docker Build and Push
+name: Release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Docker image tag'
+        description: 'Release tag, for example v1.2.0'
         required: true
-        default: 'latest'
+      prerelease:
+        description: 'Mark this release as a pre-release'
+        required: false
+        default: false
+        type: boolean
+      latest:
+        description: 'Also publish Docker image with latest tag'
+        required: false
+        default: true
+        type: boolean
 
 jobs:
-  build-and-push:
+  release:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Free Disk Space
+      - name: Free disk space
         uses: endersonmenezes/free-disk-space@v3
         with:
           remove_android: true
@@ -31,8 +45,175 @@ jobs:
           remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
           testing: false
 
+      - name: Resolve release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CURRENT_TAG="${{ github.event.inputs.tag }}"
+            PRERELEASE="${{ github.event.inputs.prerelease }}"
+            PUSH_LATEST="${{ github.event.inputs.latest }}"
+          else
+            CURRENT_TAG="${GITHUB_REF_NAME}"
+            if [[ "$CURRENT_TAG" =~ -(alpha|beta|rc|pre|preview) ]]; then
+              PRERELEASE="true"
+              PUSH_LATEST="false"
+            else
+              PRERELEASE="false"
+              PUSH_LATEST="true"
+            fi
+          fi
+
+          VERSION_NO_V="${CURRENT_TAG#v}"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          RELEASE_SHA="${GITHUB_SHA}"
+
+          echo "CURRENT_TAG=$CURRENT_TAG" >> "$GITHUB_ENV"
+          echo "VERSION_NO_V=$VERSION_NO_V" >> "$GITHUB_ENV"
+          echo "PRERELEASE=$PRERELEASE" >> "$GITHUB_ENV"
+          echo "PUSH_LATEST=$PUSH_LATEST" >> "$GITHUB_ENV"
+          echo "DEFAULT_BRANCH=$DEFAULT_BRANCH" >> "$GITHUB_ENV"
+          echo "RELEASE_SHA=$RELEASE_SHA" >> "$GITHUB_ENV"
+
+      - name: Create release tag when manually triggered
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+
+          if git rev-parse "$CURRENT_TAG" >/dev/null 2>&1; then
+            echo "Tag $CURRENT_TAG already exists."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$CURRENT_TAG" -m "Release $CURRENT_TAG"
+            git push origin "$CURRENT_TAG"
+          fi
+
+      - name: Generate changelog and release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p release
+          git fetch --tags --force
+
+          PREVIOUS_TAG=$(git tag --sort=-v:refname | grep -Fxv "$CURRENT_TAG" | head -n 1 || true)
+          RELEASE_DATE=$(date -u +"%Y-%m-%d")
+
+          if [ -n "$PREVIOUS_TAG" ]; then
+            RANGE="$PREVIOUS_TAG..$CURRENT_TAG"
+          else
+            RANGE="$CURRENT_TAG"
+          fi
+
+          git log "$RANGE" --no-merges --pretty=format:'- %s (%h)' > release/commit_list.md
+
+          if [ ! -s release/commit_list.md ]; then
+            echo "- Initial release ($CURRENT_TAG)" > release/commit_list.md
+          fi
+
+          {
+            echo "## [$VERSION_NO_V] - $RELEASE_DATE"
+            echo
+            echo "### Changed"
+            cat release/commit_list.md
+            echo
+          } > release/changelog_section.md
+
+          {
+            echo "## Release $CURRENT_TAG"
+            echo
+            echo "### What's Changed"
+            cat release/commit_list.md
+            echo
+            echo "### Docker Image"
+            echo "- \`ghcr.io/${GITHUB_REPOSITORY}:$CURRENT_TAG\`"
+            echo "- \`ghcr.io/${GITHUB_REPOSITORY}:$VERSION_NO_V\`"
+            if [ "$PUSH_LATEST" = "true" ]; then
+              echo "- \`ghcr.io/${GITHUB_REPOSITORY}:latest\`"
+            fi
+            echo
+            if [ -n "$PREVIOUS_TAG" ]; then
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${CURRENT_TAG}"
+            fi
+          } > release/release_notes.md
+
+          echo "PREVIOUS_TAG=$PREVIOUS_TAG" >> "$GITHUB_ENV"
+
+      - name: Update and push CHANGELOG.md on default branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "$DEFAULT_BRANCH"
+          git switch --create "$DEFAULT_BRANCH" --track "origin/$DEFAULT_BRANCH" 2>/dev/null || git switch "$DEFAULT_BRANCH"
+          git reset --hard "origin/$DEFAULT_BRANCH"
+
+          python3 <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          changelog_path = Path("CHANGELOG.md")
+          version = os.environ["VERSION_NO_V"]
+          new_section = Path("release/changelog_section.md").read_text(encoding="utf-8").strip() + "\n\n"
+          default_header = (
+              "# Changelog\n\n"
+              "All notable changes to this project will be documented in this file.\n\n"
+              "The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),\n"
+              "and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).\n\n"
+          )
+
+          if changelog_path.exists():
+              content = changelog_path.read_text(encoding="utf-8")
+          else:
+              content = default_header
+
+          if "# Changelog" not in content:
+              content = default_header + content.lstrip()
+
+          pattern = re.compile(
+              rf"\n## \[{re.escape(version)}\] - .*?(?=\n## \[|\Z)",
+              re.S,
+          )
+          content = re.sub(pattern, "\n", content)
+
+          marker = "\n## ["
+          idx = content.find(marker)
+          if idx == -1:
+              prefix = content.rstrip() + "\n\n"
+              rest = ""
+          else:
+              prefix = content[:idx].rstrip() + "\n\n"
+              rest = content[idx + 1 :].lstrip()
+
+          changelog_path.write_text(prefix + new_section + rest, encoding="utf-8")
+          PY
+
+          git add CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "No CHANGELOG.md changes to commit."
+          else
+            git commit -m "docs: update changelog for $CURRENT_TAG"
+            git push origin "$DEFAULT_BRANCH"
+          fi
+
+      - name: Return to release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "$RELEASE_SHA"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -41,16 +222,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for Docker
+      - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=${{ github.event.inputs.tag }}
+            type=raw,value=${{ env.CURRENT_TAG }}
+            type=raw,value=${{ env.VERSION_NO_V }}
+            type=raw,value=latest,enable=${{ env.PUSH_LATEST == 'true' }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
@@ -58,3 +241,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.CURRENT_TAG }}
+          name: Release ${{ env.CURRENT_TAG }}
+          body_path: release/release_notes.md
+          prerelease: ${{ env.PRERELEASE == 'true' }}
+          generate_release_notes: false
