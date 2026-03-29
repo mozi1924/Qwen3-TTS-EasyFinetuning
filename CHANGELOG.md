@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-03-29
+
+### Changed
+- new release workflow (89b206f)
+- 🐛 fix(webui): Load speakers from model config (631ce1a)
+- 🐛 fix(sft_12hz): Space speaker IDs by 20. (6d7c594)
+- ✨ feat(utils): Support shared model directory reuse. (cae1e46)
+- refactor: modularize training logic, add audio resampling support, and improve path and speaker name resolution utilities. (a50b73c)
+- feat: Add functions to detect and strip edge silence, and apply fades and padding to audio segments during splitting. (351b381)
+- fix: adjust `codec_mask` slicing for `talker_hidden_states` extraction. (1072748)
+
 ## [1.1.1] - 2026-03-02
 
 ### Fixed
