@@ -1,0 +1,69 @@
+name: Project question
+description: Ask a question about this repository after checking the README and trying the documented workflow.
+title: "[Question]: "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting:
+
+        - Read the README first.
+        - Try the documented workflow first.
+        - Keep the question scoped to **this repository**.
+
+        Issues that are really upstream questions, vague "can it do X" requests, or questions already answered by the README may be closed without reply.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I read the README before opening this question.
+          required: true
+        - label: I tried the documented workflow or setup before asking.
+          required: true
+        - label: This question is about this repository itself, not a generic upstream or theoretical question.
+          required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: Ask one clear, concrete question.
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_tried
+    attributes:
+      label: What have you already tried?
+      description: Show the exact workflow, command, or README section you already followed.
+      placeholder: |
+        I followed README section ...
+        I ran ...
+        I checked ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Relevant environment details
+      description: Include OS, install method, Python/CUDA/GPU details if relevant to the question.
+      placeholder: |
+        OS:
+        Install method:
+        Python:
+        CUDA:
+        GPU:
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: Optional but strongly recommended when the question is about a failure or unexpected behavior.
+      render: shell
