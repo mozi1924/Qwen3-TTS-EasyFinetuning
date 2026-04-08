@@ -1,0 +1,71 @@
+name: Feature request
+description: Suggest a feature that fits this repository's actual scope and workflow.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting:
+
+        - Read the README first.
+        - Make sure this request is about **this repository itself**, not a vague upstream idea or a request for unrelated functionality.
+        - Do **not** use this form for basic usage questions or requests already answered by the README.
+
+        Feature requests that ignore documented behavior, duplicate existing workflow, or fall outside this project's scope may be closed without further discussion.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I read the README and this request is not already answered by the documented workflow.
+          required: true
+        - label: This request is specifically about this repository, not just upstream/offical Qwen3-TTS behavior.
+          required: true
+        - label: I am proposing a concrete improvement, not asking a general support question.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem is this feature solving?
+      description: Describe the concrete pain point in this repository's real workflow.
+      placeholder: What is missing or painful right now?
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_workflow
+    attributes:
+      label: Current workflow you tried
+      description: Show that you actually tried the existing project flow first.
+      placeholder: |
+        I followed README section ...
+        I ran ...
+        The limitation was ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the feature you want in a concrete way.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Why does this belong in this project?
+      description: Explain why this should live here instead of upstream or in user-specific custom tooling.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. What did you try or consider instead?
