@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions / upstream issues / unsupported setups
+    url: https://github.com/mozi1924/Qwen3-TTS-EasyFinetuning#readme
+    about: Re-check the README and project workflow first. If the problem is not yet reproduced against this repository, it is not a confirmed project bug.
