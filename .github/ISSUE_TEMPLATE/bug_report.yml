@@ -1,0 +1,133 @@
+name: Bug report
+description: Report a reproducible bug in this repository's actual workflow.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting:
+
+        - Reproduce the issue with **this repository itself**.
+        - Do **not** file upstream / official-source-only issues here unless you can reproduce them against this project.
+        - Issues without clear reproduction steps, environment details, and relevant logs may be closed without further investigation.
+
+        If you did not test against this project as-is, this is **not yet a confirmed project bug**.
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Pre-submission checklist
+      description: You must confirm all items below.
+      options:
+        - label: I reproduced this issue using this repository's actual code/workflow, not just upstream or official source code.
+          required: true
+        - label: I read the README and followed the documented setup/usage as closely as possible.
+          required: true
+        - label: I included the exact command(s), environment details, and relevant logs below.
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the actual bug in one concise paragraph.
+      placeholder: Tell us what broke.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Exact reproduction steps
+      description: Provide a step-by-step reproduction using this repository.
+      placeholder: |
+        1. Clone this repo at commit ...
+        2. Run ...
+        3. Open ...
+        4. See error ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: commands
+    attributes:
+      label: Exact command(s) used
+      description: Paste the full command(s) you actually ran.
+      render: shell
+      placeholder: |
+        docker compose up -d
+        python src/cli.py prepare --input_dir ... --speaker_name ...
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Repository commit / branch
+      description: Which commit or branch did you test?
+      placeholder: e.g. master @ abc1234
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Installation method
+      options:
+        - Docker / Docker Compose
+        - Python virtual environment
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Python version, CUDA version, GPU, driver version, and anything else relevant.
+      placeholder: |
+        OS:
+        Python:
+        CUDA:
+        GPU:
+        Driver:
+        Docker version:
+    validations:
+      required: true
+
+  - type: textarea
+    id: model_config
+    attributes:
+      label: Model / config / path details
+      description: Include model variant, checkpoint path, dataset path, config overrides, and other relevant inputs.
+      placeholder: |
+        Model:
+        Checkpoint path:
+        Dataset path:
+        Config overrides:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or traceback
+      description: Paste the full relevant logs. Do not paraphrase.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Optional. Screenshots, links, or extra notes.
