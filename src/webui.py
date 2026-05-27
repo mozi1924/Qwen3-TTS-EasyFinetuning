@@ -255,11 +255,21 @@ def run_step_3(speaker_name, experiment_name, gpu_id, progress=gr.Progress()):
 
     resolved_tokenizer = get_model_path("Qwen/Qwen3-TTS-Tokenizer-12Hz", use_hf=False)
     device = "cuda:0" if gpu_id != "cpu" else "cpu"
-    stream = stream_isolated(internal_run_prepare, input_jsonl, output_jsonl, resolved_tokenizer, batch_size=2, device=device)
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
+    stream = stream_isolated(internal_run_prepare, device, resolved_tokenizer, input_jsonl, output_jsonl)
     yield from stream_worker_updates(stream, progress)
 
 
-def run_embed_speakers(speaker_name, base_model="Qwen/Qwen3-TTS-12Hz-1.7B-Base", progress=gr.Progress()):
+def resolve_embed_base_model(model_name):
+    model_name = model_name.strip() if isinstance(model_name, str) else ""
+    if model_name.endswith("-Base"):
+        return model_name
+    if "0.6B" in model_name:
+        return "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+    return "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+
+
+def run_embed_speakers(speaker_name, gpu_id, model_name, progress=gr.Progress()):
     """Pre-compute speaker embeddings from reference audio."""
     if isinstance(speaker_name, list):
         speakers = [s.strip() for s in speaker_name if s.strip()]
@@ -269,18 +279,25 @@ def run_embed_speakers(speaker_name, base_model="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         yield "Please select speakers."
         return
 
+    if gpu_id == "cpu":
+        yield "Speaker embedding currently requires a CUDA device."
+        return
+
+    base_model = resolve_embed_base_model(model_name)
+    device = "cuda:0"
     progress(0.1, desc="Loading speaker_encoder...")
     import torch, librosa, json
     from qwen_tts import Qwen3TTSModel
     from qwen_tts.core.models.modeling_qwen3_tts import mel_spectrogram
     from safetensors.torch import save_file
 
+    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "")
     base = Qwen3TTSModel.from_pretrained(
         base_model,
-        device_map="cuda:0", torch_dtype=torch.bfloat16,
+        device_map=device, torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
     )
-    se = base.model.speaker_encoder.to("cuda:0")
+    se = base.model.speaker_encoder.to(device)
     del base
     import gc
     gc.collect()
@@ -310,7 +327,7 @@ def run_embed_speakers(speaker_name, base_model="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
                  desc=f"Embedding {spk}...")
         audio, sr = librosa.load(ref, sr=24000, mono=True)
         mel = mel_spectrogram(
-            torch.from_numpy(audio).unsqueeze(0).to("cuda:0"),
+            torch.from_numpy(audio).unsqueeze(0).to(device),
             n_fft=1024, num_mels=128, sampling_rate=24000,
             hop_size=256, win_size=1024, fmin=0, fmax=12000,
         ).transpose(1, 2).to(torch.bfloat16)
@@ -956,7 +973,7 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
     # Step 3
     step3_btn.click(fn=run_step_3, inputs=[speaker_dropdown, experiment_dropdown, gpu_prep], outputs=[step3_out])
     # Embed Speakers
-    embed_btn.click(fn=run_embed_speakers, inputs=[speaker_dropdown], outputs=[step3_out])
+    embed_btn.click(fn=run_embed_speakers, inputs=[speaker_dropdown, gpu_prep, init_model], outputs=[step3_out])
     
     # Utilities
     download_btn.click(fn=check_or_download_model, inputs=[init_model, model_source], outputs=[download_log])

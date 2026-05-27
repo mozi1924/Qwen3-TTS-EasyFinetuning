@@ -8,48 +8,61 @@ embeddings directly, avoiding redundant GPU computation in every training step.
 
 Usage:
   # Per-speaker ref from JSONL (default)
-  python scripts/embed_speaker.py --base_model Qwen/Qwen3-TTS-12Hz-0.6B-Base
+  python src/embed_speaker.py --base_model Qwen/Qwen3-TTS-12Hz-0.6B-Base
 
   # Average all audio per speaker
-  python scripts/embed_speaker.py --base_model Qwen/Qwen3-TTS-12Hz-1.7B-Base --mode avg_all
+  python src/embed_speaker.py --base_model Qwen/Qwen3-TTS-12Hz-1.7B-Base --mode avg_all
 
   # Custom ref audio for a single speaker
-  python scripts/embed_speaker.py --speaker my_speaker --ref /path/to/ref.wav
+  python src/embed_speaker.py --speaker my_speaker --ref /path/to/ref.wav
 
   # Multi-ref averaging
-  python scripts/embed_speaker.py --speaker my_speaker --ref a.wav,b.wav,c.wav
+  python src/embed_speaker.py --speaker my_speaker --ref a.wav,b.wav,c.wav
 
 Output: final-dataset/{speaker}/speaker_emb.safetensors (1024-dim tensor)
 """
 
-import torch, os, sys, json, gc, argparse, numpy as np
+import argparse
+import gc
+import json
+import os
+import sys
+
+import torch
 import librosa
 from qwen_tts import Qwen3TTSModel
 from qwen_tts.core.models.modeling_qwen3_tts import mel_spectrogram
 
 
-def load_speaker_encoder(model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base"):
+def get_runtime_device():
+    return "cuda:0" if torch.cuda.is_available() else "cpu"
+
+
+def load_speaker_encoder(model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base", device="cuda:0"):
     """Load Base model just for its speaker_encoder."""
     base = Qwen3TTSModel.from_pretrained(
         model_id,
-        device_map="cuda:0", torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
+        device_map=device,
+        torch_dtype=torch.bfloat16 if device.startswith("cuda") else torch.float32,
+        attn_implementation="flash_attention_2" if device.startswith("cuda") else "eager",
     )
-    se = base.model.speaker_encoder.to("cuda:0")
+    se = base.model.speaker_encoder.to(device)
     del base
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return se
 
 
-def extract_embedding(se, audio_path):
+def extract_embedding(se, audio_path, device):
     """Extract 1024-dim speaker embedding from audio file."""
     audio, sr = librosa.load(audio_path, sr=24000, mono=True)
     mel = mel_spectrogram(
-        torch.from_numpy(audio).unsqueeze(0).to("cuda:0"),
+        torch.from_numpy(audio).unsqueeze(0).to(device),
         n_fft=1024, num_mels=128, sampling_rate=24000,
         hop_size=256, win_size=1024, fmin=0, fmax=12000,
-    ).transpose(1, 2).to(torch.bfloat16)
+    ).transpose(1, 2)
+    mel = mel.to(torch.bfloat16 if device.startswith("cuda") else torch.float32)
     with torch.no_grad():
         emb = se(mel).detach()  # [1, 1024]
     return emb[0].cpu()
@@ -66,7 +79,8 @@ def main():
     parser.add_argument("--output", default=None, help="Custom output path")
     args = parser.parse_args()
 
-    se = load_speaker_encoder(args.base_model)
+    device = get_runtime_device()
+    se = load_speaker_encoder(args.base_model, device=device)
 
     dataset_path = "final-dataset"
     if not os.path.isdir(dataset_path):
@@ -78,7 +92,8 @@ def main():
         if os.path.isdir(os.path.join(dataset_path, d))
     ]
 
-    # Embeddings go alongside speaker data in final-dataset/
+    for spk in speakers:
+        # Embeddings go alongside speaker data in final-dataset/
         spk_dir = os.path.join(dataset_path, spk)
         jsonl = os.path.join(spk_dir, "tts_train.jsonl")
         audio_dir = os.path.join(spk_dir, "audio_24k")
@@ -93,7 +108,7 @@ def main():
                     ref_file = os.path.join(audio_dir, ref_file)
                 if os.path.exists(ref_file):
                     print(f"  {spk}: {os.path.basename(ref_file)}")
-                    embeddings.append(extract_embedding(se, ref_file))
+                    embeddings.append(extract_embedding(se, ref_file, device))
         elif args.mode == "avg_all":
             if os.path.exists(jsonl):
                 with open(jsonl) as f:
@@ -101,7 +116,7 @@ def main():
                 for entry in entries:
                     audio_path = entry.get("audio")
                     if audio_path and os.path.exists(audio_path):
-                        embeddings.append(extract_embedding(se, audio_path))
+                        embeddings.append(extract_embedding(se, audio_path, device))
                 print(f"  {spk}: averaged {len(entries)} samples")
             else:
                 print(f"  {spk}: no JSONL, skipping")
@@ -115,7 +130,7 @@ def main():
                     ref = entries[0].get("ref_audio")
                     if ref and os.path.exists(ref):
                         print(f"  {spk}: {os.path.basename(ref)}")
-                        embeddings.append(extract_embedding(se, ref))
+                        embeddings.append(extract_embedding(se, ref, device))
                     else:
                         print(f"  {spk}: ref_audio not found in JSONL, skipping")
                         continue
@@ -136,7 +151,8 @@ def main():
 
     del se
     gc.collect()
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     print("\nDone.")
 
 
