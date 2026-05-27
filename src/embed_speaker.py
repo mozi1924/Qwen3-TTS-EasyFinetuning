@@ -13,6 +13,9 @@ Usage:
   # Average all audio per speaker
   python src/embed_speaker.py --base_model Qwen/Qwen3-TTS-12Hz-1.7B-Base --mode avg_all
 
+  # Use HuggingFace instead of the project's default model source
+  python src/embed_speaker.py --base_model Qwen/Qwen3-TTS-12Hz-0.6B-Base --model_source HuggingFace
+
   # Custom ref audio for a single speaker
   python src/embed_speaker.py --speaker my_speaker --ref /path/to/ref.wav
 
@@ -32,6 +35,7 @@ import torch
 import librosa
 from qwen_tts import Qwen3TTSModel
 from qwen_tts.core.models.modeling_qwen3_tts import mel_spectrogram
+from utils import get_model_path
 
 
 def get_runtime_device():
@@ -72,6 +76,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base_model", default="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
                         help="Base model HF ID for speaker_encoder extraction")
+    parser.add_argument("--model_source", default="ModelScope", choices=["HuggingFace", "ModelScope"],
+                        help="Model download source, consistent with the rest of the project")
     parser.add_argument("--mode", default="ref", choices=["ref", "avg_all"],
                         help="ref=use ref_audio from JSONL, avg_all=average all samples per speaker")
     parser.add_argument("--speaker", default=None, help="Process single speaker")
@@ -80,8 +86,11 @@ def main():
     args = parser.parse_args()
 
     device = get_runtime_device()
+    use_hf = args.model_source == "HuggingFace"
+    resolved_base_model = get_model_path(args.base_model, use_hf=use_hf)
     print(f"Loading speaker_encoder from {args.base_model}")
-    se = load_speaker_encoder(args.base_model, device=device)
+    print(f"Resolved model path: {resolved_base_model}")
+    se = load_speaker_encoder(resolved_base_model, device=device)
 
     dataset_path = "final-dataset"
     if not os.path.isdir(dataset_path):

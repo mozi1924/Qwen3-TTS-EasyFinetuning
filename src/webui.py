@@ -210,7 +210,7 @@ def run_step_2(speaker_name, asr_model, asr_source, gpu_id, progress=gr.Progress
     yield from stream_worker_updates(stream, progress)
 
 # ----------------- Step 3: Tokenization -----------------
-def run_step_3(speaker_name, experiment_name, gpu_id, progress=gr.Progress()):
+def run_step_3(speaker_name, experiment_name, gpu_id, model_source, progress=gr.Progress()):
     if isinstance(speaker_name, list):
         speaker_names = [s.strip() for s in speaker_name if s.strip()]
     elif isinstance(speaker_name, str):
@@ -253,7 +253,8 @@ def run_step_3(speaker_name, experiment_name, gpu_id, progress=gr.Progress()):
             yield f"Error: File {input_jsonl} not found. Please run Data Prep Step 1 & 2 first."
             return
 
-    resolved_tokenizer = get_model_path("Qwen/Qwen3-TTS-Tokenizer-12Hz", use_hf=False)
+    use_hf = model_source == "HuggingFace"
+    resolved_tokenizer = get_model_path("Qwen/Qwen3-TTS-Tokenizer-12Hz", use_hf=use_hf)
     device = "cuda:0" if gpu_id != "cpu" else "cpu"
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "") if gpu_id != "cpu" else ""
     stream = stream_isolated(internal_run_prepare, device, resolved_tokenizer, input_jsonl, output_jsonl)
@@ -361,7 +362,7 @@ def check_or_download_model(init_model, model_source, progress=gr.Progress()):
         download_base_model.target_dir = get_model_local_dir(init_model)
         resolved_init_model = run_with_polling(download_base_model, progress, progress_start=0.05, progress_end=0.55, desc_prefix=f"Downloading base model {init_model}")
         def download_tokenizer_model():
-            return get_model_path(tokenizer_model_id, use_hf=False)
+            return get_model_path(tokenizer_model_id, use_hf=use_hf)
         download_tokenizer_model.target_dir = get_model_local_dir(tokenizer_model_id)
         resolved_tokenizer = run_with_polling(download_tokenizer_model, progress, progress_start=0.60, progress_end=0.98, desc_prefix=f"Downloading tokenizer {tokenizer_model_id}")
         progress(1.0, desc="All required models are ready")
@@ -977,7 +978,7 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
 
     
     # Step 3
-    step3_btn.click(fn=run_step_3, inputs=[speaker_dropdown, experiment_dropdown, gpu_prep], outputs=[step3_out])
+    step3_btn.click(fn=run_step_3, inputs=[speaker_dropdown, experiment_dropdown, gpu_prep, model_source], outputs=[step3_out])
     # Embed Speakers
     embed_btn.click(fn=run_embed_speakers, inputs=[speaker_dropdown, gpu_prep, init_model, model_source], outputs=[step3_out])
     

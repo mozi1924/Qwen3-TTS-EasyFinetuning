@@ -160,7 +160,8 @@ def cmd_tokenize(args):
             print(f"  ❌ File {input_jsonl} not found.")
             sys.exit(1)
     
-    resolved_tokenizer = get_model_path("Qwen/Qwen3-TTS-Tokenizer-12Hz", use_hf=False)
+    use_hf = args.model_source == "HuggingFace"
+    resolved_tokenizer = get_model_path("Qwen/Qwen3-TTS-Tokenizer-12Hz", use_hf=use_hf)
     device = "cuda:0" if args.gpu != "cpu" else "cpu"
     
     consume_generator(run_prepare(device, resolved_tokenizer, input_jsonl, output_codes_jsonl))
@@ -421,6 +422,7 @@ Examples:
     p_tokenize = subparsers.add_parser("tokenize", help="Step 3: Data Tokenization")
     p_tokenize.add_argument("--speaker_name", type=str, required=True, help="Speaker name(s), comma-separated for multi-speaker")
     p_tokenize.add_argument("--experiment_name", type=str, required=True, help="Experiment name for saving logs/codes")
+    p_tokenize.add_argument("--model_source", type=str, choices=["HuggingFace", "ModelScope"], default="HuggingFace")
     p_tokenize.add_argument("--gpu", type=str, default="cuda:0")
 
     # ── train ──
