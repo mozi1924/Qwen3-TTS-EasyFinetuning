@@ -262,14 +262,18 @@ def run_step_3(speaker_name, experiment_name, gpu_id, progress=gr.Progress()):
 
 def resolve_embed_base_model(model_name):
     model_name = model_name.strip() if isinstance(model_name, str) else ""
+    if not model_name:
+        return "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
     if model_name.endswith("-Base"):
         return model_name
     if "0.6B" in model_name:
         return "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
-    return "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    if "1.7B" in model_name:
+        return "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+    return "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
 
 
-def run_embed_speakers(speaker_name, gpu_id, model_name, progress=gr.Progress()):
+def run_embed_speakers(speaker_name, gpu_id, model_name, model_source, progress=gr.Progress()):
     """Pre-compute speaker embeddings from reference audio."""
     if isinstance(speaker_name, list):
         speakers = [s.strip() for s in speaker_name if s.strip()]
@@ -284,8 +288,10 @@ def run_embed_speakers(speaker_name, gpu_id, model_name, progress=gr.Progress())
         return
 
     base_model = resolve_embed_base_model(model_name)
+    use_hf = model_source == "HuggingFace"
+    resolved_base_model = get_model_path(base_model, use_hf=use_hf)
     device = "cuda:0"
-    progress(0.1, desc="Loading speaker_encoder...")
+    progress(0.1, desc=f"Loading speaker_encoder from {base_model}...")
     import torch, librosa, json
     from qwen_tts import Qwen3TTSModel
     from qwen_tts.core.models.modeling_qwen3_tts import mel_spectrogram
@@ -293,7 +299,7 @@ def run_embed_speakers(speaker_name, gpu_id, model_name, progress=gr.Progress())
 
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id.replace("cuda:", "")
     base = Qwen3TTSModel.from_pretrained(
-        base_model,
+        resolved_base_model,
         device_map=device, torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
     )
@@ -342,7 +348,7 @@ def run_embed_speakers(speaker_name, gpu_id, model_name, progress=gr.Progress())
     gc.collect()
     torch.cuda.empty_cache()
     progress(1.0, desc="Done")
-    yield "\n".join(msgs)
+    yield f"Using base speaker encoder: {base_model}\n" + "\n".join(msgs)
 
 # ----------------- Download Model -----------------
 def check_or_download_model(init_model, model_source, progress=gr.Progress()):
@@ -973,7 +979,7 @@ with gr.Blocks(title="Qwen3-TTS Easy Finetuning", css=css) as app:
     # Step 3
     step3_btn.click(fn=run_step_3, inputs=[speaker_dropdown, experiment_dropdown, gpu_prep], outputs=[step3_out])
     # Embed Speakers
-    embed_btn.click(fn=run_embed_speakers, inputs=[speaker_dropdown, gpu_prep, init_model], outputs=[step3_out])
+    embed_btn.click(fn=run_embed_speakers, inputs=[speaker_dropdown, gpu_prep, init_model, model_source], outputs=[step3_out])
     
     # Utilities
     download_btn.click(fn=check_or_download_model, inputs=[init_model, model_source], outputs=[download_log])

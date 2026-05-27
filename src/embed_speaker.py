@@ -38,7 +38,7 @@ def get_runtime_device():
     return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
-def load_speaker_encoder(model_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base", device="cuda:0"):
+def load_speaker_encoder(model_id="Qwen/Qwen3-TTS-12Hz-0.6B-Base", device="cuda:0"):
     """Load Base model just for its speaker_encoder."""
     base = Qwen3TTSModel.from_pretrained(
         model_id,
@@ -70,7 +70,7 @@ def extract_embedding(se, audio_path, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base_model", default="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+    parser.add_argument("--base_model", default="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
                         help="Base model HF ID for speaker_encoder extraction")
     parser.add_argument("--mode", default="ref", choices=["ref", "avg_all"],
                         help="ref=use ref_audio from JSONL, avg_all=average all samples per speaker")
@@ -80,6 +80,7 @@ def main():
     args = parser.parse_args()
 
     device = get_runtime_device()
+    print(f"Loading speaker_encoder from {args.base_model}")
     se = load_speaker_encoder(args.base_model, device=device)
 
     dataset_path = "final-dataset"
